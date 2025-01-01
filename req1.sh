@@ -1,412 +1,376 @@
-#!/bin/bash
+#!/usr/bin/env bash
+###############################################################################
+#  req1: Скрипт для установки и настройки Outline (Shadowbox) + обфускации.
+#  ---------------------------------------------------------------------------
+#  1. Устанавливает Docker из репозитория Docker (download.docker.com).
+#  2. Устанавливает необходимые пакеты: iptables, openssl, jq, net-tools и т.д.
+#  3. Удаляет старые версии Outline (shadowbox, watchtower) и старые сертификаты.
+#  4. Настраивает NAT (MASQUERADE), блокировку ICMP, MTU.
+#  5. Генерирует самоподписанный сертификат, ключи, SHA-256 fingerprint.
+#  6. Запускает контейнеры Outline (shadowbox) и Watchtower.
+#  7. Выводит конечную конфигурацию (JSON) и инструкции по подключению.
 #
-# Скрипт для установки и настройки сервера Outline (Shadowbox) в Docker,
-# регулярного обновления через Watchtower, а также дополнительных мер обфускации
-# и маскировки VPN-трафика.
-#
-# ------------------------------------------------------------
-# ЛИЦЕНЗИЯ:
-# Данный код представляет собой переработанную версию скрипта
-# "install_server.sh" из репозитория Outline (Apache License 2.0).
-# Оригинальный копирайт:
-# Copyright 2018 The Outline Authors
-# ------------------------------------------------------------
+#  Скрипт не прерывается при ошибках (не вызывает exit), а логирует их 
+#  и в конце оповещает о количестве проблем, если они были.
+###############################################################################
 
-##############################################################################
-#                         ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ                              #
-##############################################################################
+#####################
+### Цветные логи  ###
+#####################
+COLOR_RED='\033[0;31m'
+COLOR_GREEN='\033[0;32m'
+COLOR_YELLOW='\033[0;33m'
+COLOR_BLUE='\033[0;34m'
+COLOR_CYAN='\033[0;36m'
+COLOR_RESET='\033[0m'
 
-# Счётчик ошибок. При возникновении проблем увеличиваем, чтобы затем сигнализировать.
-SCRIPT_ERRORS=0
-
-# Цвета для логирования (ANSI escape codes).
-RED="\e[31m"
-GREEN="\e[32m"
-YELLOW="\e[33m"
-BLUE="\e[34m"
-RESET="\e[0m"
-
-# Переменные для хранения важной конфигурации.
-CONFIG_STRING=""  # Будет содержать строку для подключения в Outline Manager.
-FINAL_KEYS=""     # Сюда соберём все ключи/пароли/сертификаты/пр. чтобы распечатать в конце.
-
-# Переменные флагов (параметры командной строки).
-FLAGS_HOSTNAME=""
-FLAGS_API_PORT=0
-FLAGS_KEYS_PORT=0
-
-
-##############################################################################
-#                                ЛОГИРОВАНИЕ                                 #
-##############################################################################
-
-# Лог информационного характера
-function LOG_INFO() {
-  echo -e "${BLUE}[INFO]${RESET} $1"
-}
-
-# Лог успешного завершения
-function LOG_OK() {
-  echo -e "${GREEN}[OK]${RESET} $1"
-}
-
-# Лог предупреждения
-function LOG_WARN() {
-  echo -e "${YELLOW}[WARNING]${RESET} $1"
-}
-
-# Лог ошибки (не завершает скрипт, но увеличивает счётчик ошибок)
-function LOG_ERROR() {
-  echo -e "${RED}[ERROR]${RESET} $1"
+function LOG_OK()    { echo -e "${COLOR_GREEN}[OK] ${1}${COLOR_RESET}"; }
+function LOG_INFO()  { echo -e "${COLOR_CYAN}[INFO] ${1}${COLOR_RESET}"; }
+function LOG_WARN()  { echo -e "${COLOR_YELLOW}[WARN] ${1}${COLOR_RESET}"; }
+function LOG_ERROR() { 
+  echo -e "${COLOR_RED}[ERROR] ${1}${COLOR_RESET}"
   (( SCRIPT_ERRORS++ ))
 }
 
+SCRIPT_ERRORS=0  # счётчик ошибок
 
-##############################################################################
-#                      ФУНКЦИИ УСТАНОВКИ НЕОБХОДИМЫХ КОМПОНЕНТОВ             #
-##############################################################################
+###############################################################################
+#                 Раздел 1. Проверка и установка необходимых пакетов          #
+###############################################################################
 
-# Унифицированная функция для установки пакетов
-# (Подходит в основном для Debian/Ubuntu. Для CentOS надо изменить на yum/dnf).
-function install_package() {
-  local PKG_NAME="$1"
-  # Проверим, установлен ли уже пакет
-  dpkg -s "$PKG_NAME" &>/dev/null
-  if [[ $? -eq 0 ]]; then
-    LOG_OK "Пакет '$PKG_NAME' уже установлен."
-    return
-  fi
-
-  LOG_INFO "Устанавливаем пакет '$PKG_NAME'..."
-  apt-get update -y &>/dev/null
-  if apt-get install -y "$PKG_NAME" &>/dev/null; then
-    LOG_OK "Пакет '$PKG_NAME' успешно установлен."
+# Проверка, запущен ли скрипт от root
+function check_root() {
+  LOG_INFO "Проверяем, что скрипт запущен под root (или sudo)..."
+  if [[ $EUID -ne 0 ]]; then
+    LOG_ERROR "Скрипт НЕ под root. Некоторые действия могут не сработать."
   else
-    LOG_ERROR "Не удалось установить пакет '$PKG_NAME'. Установите вручную."
+    LOG_OK "Скрипт запущен под root."
   fi
 }
 
-# Проверка и установка Docker
-function ensure_docker_installed() {
+# Добавляем репозиторий Docker и устанавливаем Docker CE (как в вашем примере)
+function install_docker_from_official_repo() {
   LOG_INFO "Проверяем, установлен ли Docker..."
-  if command -v docker &>/dev/null; then
-    LOG_OK "Docker уже установлен."
-    return
-  fi
+  if ! command -v docker &> /dev/null; then
+    LOG_WARN "Docker не обнаружен. Устанавливаем из официального репозитория..."
 
-  LOG_INFO "Docker не обнаружен. Пытаемся установить..."
-  # Способ 1: через официальный скрипт get.docker.com
-  # (Можно заменить на репозиторий Docker: apt-get install -y docker.io)
-  # Здесь выбрано использование официального скрипта:
-  curl -fsSL https://get.docker.com -o get-docker.sh
-  if bash get-docker.sh &>/dev/null; then
-    LOG_OK "Docker установлен через get.docker.com."
-  else
-    LOG_ERROR "Не удалось установить Docker через get.docker.com. Установите вручную."
-  fi
-  rm -f get-docker.sh
-}
+    # 1) Устанавливаем зависимости
+    apt-get update -y || LOG_ERROR "apt-get update не сработал (перед Docker)."
+    apt-get install -y apt-transport-https ca-certificates curl gnupg lsb-release \
+      || LOG_ERROR "Установка зависимостей для Docker не прошла."
 
-# Проверяем и запускаем docker-демон
-function ensure_docker_running() {
-  LOG_INFO "Проверяем, запущен ли Docker-демон..."
-  local STDERR_OUTPUT
-  STDERR_OUTPUT="$(docker info 2>&1 >/dev/null)"
-  if [[ $? -eq 0 ]]; then
-    LOG_OK "Docker-демон запущен."
-  else
-    LOG_WARN "Docker-демон не запущен. Пытаемся запустить через systemctl..."
-    systemctl start docker &>/dev/null
-    # Повторная проверка
-    STDERR_OUTPUT="$(docker info 2>&1 >/dev/null)"
-    if [[ $? -eq 0 ]]; then
-      LOG_OK "Docker-демон запущен (после systemctl start)."
+    # 2) Получаем GPG-ключ Docker
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor \
+      | tee /usr/share/keyrings/docker-archive-keyring.gpg > /dev/null \
+      || LOG_ERROR "Не смогли получить GPG-ключ Docker."
+
+    # 3) Добавляем репозиторий
+    echo \
+      "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] \
+      https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" \
+      | tee /etc/apt/sources.list.d/docker.list > /dev/null \
+      || LOG_ERROR "Не удалось добавить репозиторий Docker."
+
+    # 4) Устанавливаем Docker
+    apt-get update -y || LOG_ERROR "apt-get update не сработал (для Docker)."
+    apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin \
+      || LOG_ERROR "Не удалось установить Docker CE."
+
+    systemctl enable docker && systemctl start docker \
+      || LOG_ERROR "Не удалось запустить Docker через systemctl."
+
+    if command -v docker &> /dev/null; then
+      LOG_OK "Docker установлен и запущен."
     else
-      LOG_ERROR "Не удалось запустить Docker-демон. Информация: ${STDERR_OUTPUT}"
+      LOG_ERROR "Docker не обнаружен после попытки установки."
     fi
+  else
+    LOG_OK "Docker уже установлен."
+    systemctl start docker || LOG_WARN "Не удалось (re)start Docker.service."
   fi
 }
 
+# Устанавливаем нужные пакеты из стандартных репозиториев Ubuntu
+function install_required_packages() {
+  LOG_INFO "Обновляем пакеты и устанавливаем iptables, openssl, jq, net-tools, curl..."
+  apt-get update -y || LOG_ERROR "apt-get update не сработал (общий)."
+  apt-get install -y iptables openssl jq net-tools curl coreutils \
+    || LOG_ERROR "Установка необходимых пакетов (iptables,openssl,jq и т.д.) не прошла."
 
-##############################################################################
-#                          ФУНКЦИИ ДОПОЛНИТЕЛЬНОЙ НАСТРОЙКИ                  #
-##############################################################################
+  command -v iptables &>/dev/null || LOG_ERROR "iptables не установлен."
+  command -v openssl  &>/dev/null || LOG_ERROR "openssl не установлен."
+  command -v jq       &>/dev/null || LOG_ERROR "jq не установлен."
+  command -v netstat  &>/dev/null || LOG_WARN "net-tools (netstat) может быть недоступен."
+}
 
-# -----------------------
-# 1. Блокировка ICMP (ping)
-# -----------------------
-function configure_icmp() {
-  LOG_INFO "Настраиваем блокировку/ограничение ICMP (ping) для сокрытия VPN..."
-  if iptables -A INPUT -p icmp --icmp-type echo-request -j DROP; then
-    LOG_OK "ICMP echo-request (входящие) заблокированы."
-  else
-    LOG_ERROR "Ошибка при блокировке входящих ICMP echo-request."
+###############################################################################
+#       Раздел 2. Очистка старых версий Outline (контейнеров, директорий)     #
+###############################################################################
+
+function remove_old_outline() {
+  LOG_INFO "Проверяем и удаляем старые контейнеры shadowbox/watchtower, если есть..."
+  
+  local old_shadowbox
+  old_shadowbox="$(docker ps -a --format '{{.Names}}' | grep '^shadowbox$' || true)"
+  if [[ -n "$old_shadowbox" ]]; then
+    LOG_WARN "Найден старый контейнер shadowbox. Удаляем..."
+    docker rm -f shadowbox || LOG_ERROR "Не смогли удалить контейнер shadowbox."
   fi
 
-  if iptables -A OUTPUT -p icmp --icmp-type echo-reply -j DROP; then
-    LOG_OK "ICMP echo-reply (исходящие) заблокированы."
-  else
-    LOG_ERROR "Ошибка при блокировке исходящих ICMP echo-reply."
+  local old_watchtower
+  old_watchtower="$(docker ps -a --format '{{.Names}}' | grep '^watchtower$' || true)"
+  if [[ -n "$old_watchtower" ]]; then
+    LOG_WARN "Найден старый контейнер watchtower. Удаляем..."
+    docker rm -f watchtower || LOG_ERROR "Не смогли удалить контейнер watchtower."
+  fi
+
+  LOG_INFO "Удаляем старые сертификаты, если остались..."
+  if [[ -d /opt/outline/persisted-state ]]; then
+    rm -rf /opt/outline/persisted-state \
+      && LOG_OK "Старая директория persisted-state удалена." \
+      || LOG_ERROR "Не смогли удалить /opt/outline/persisted-state."
   fi
 }
 
-# -----------------------
-# 2. Настройка MTU
-# -----------------------
-function configure_mtu() {
-  LOG_INFO "Настраиваем MTU для усложнения анализа VPN-трафика провайдером..."
-  local IFACE="eth0"
-  local MTU_VALUE="1400"
+###############################################################################
+#               Раздел 3. Настройка NAT, блокировка ICMP, MTU                #
+###############################################################################
 
-  if ip link set dev "${IFACE}" mtu "${MTU_VALUE}"; then
-    LOG_OK "MTU для интерфейса ${IFACE} установлен в ${MTU_VALUE}."
-  else
-    LOG_ERROR "Не удалось установить MTU для интерфейса ${IFACE}."
-  fi
-
-  # Проверка
-  local CURRENT_MTU
-  CURRENT_MTU="$(ip addr show "${IFACE}" | grep mtu | awk '{print $5}')"
-  if [[ "${CURRENT_MTU}" == "${MTU_VALUE}" ]]; then
-    LOG_OK "Проверка MTU прошла успешно (текущее значение: ${CURRENT_MTU})."
-  else
-    LOG_ERROR "Проверка MTU провалилась. Текущее значение: ${CURRENT_MTU}."
-  fi
-}
-
-# -----------------------
-# 3. Настройка NAT (маскарадинг)
-# -----------------------
 function configure_nat() {
-  LOG_INFO "Настраиваем NAT-маскарадинг..."
+  LOG_INFO "Включаем IPv4 forwarding и настраиваем MASQUERADE (eth0)..."
+
+  sed -i 's/#*net.ipv4.ip_forward=.*/net.ipv4.ip_forward=1/' /etc/sysctl.conf
+  sysctl -p | grep "net.ipv4.ip_forward" &>/dev/null \
+    && LOG_OK "IPv4 forwarding включён (sysctl)." \
+    || LOG_ERROR "Не удалось включить IPv4 forwarding (sysctl)."
+
   local OUT_IFACE="eth0"
-
-  if iptables -t nat -A POSTROUTING -o "${OUT_IFACE}" -j MASQUERADE; then
-    LOG_OK "Правило маскарадинга NAT успешно добавлено."
-  else
-    LOG_ERROR "Ошибка при добавлении правила маскарадинга NAT."
-  fi
-
-  if iptables -t nat -S POSTROUTING | grep -q "MASQUERADE"; then
-    LOG_OK "Правило MASQUERADE присутствует в iptables."
-  else
-    LOG_ERROR "Правило MASQUERADE не найдено в iptables."
-  fi
+  iptables -t nat -A POSTROUTING -o "$OUT_IFACE" -j MASQUERADE \
+    && LOG_OK "iptables MASQUERADE добавлен для $OUT_IFACE." \
+    || LOG_ERROR "Не удалось добавить MASQUERADE для $OUT_IFACE."
 }
 
-# -----------------------
-# 4. Настройка портов (443)
-# -----------------------
-function configure_ports() {
-  LOG_INFO "Проверяем наличие/конфликты TCP/UDP-порта 443..."
+function configure_icmp() {
+  LOG_INFO "Ограничиваем ICMP (ping), блокируем echo-request и echo-reply..."
 
-  local PORT=443
-  local CHECK_TCP
-  local CHECK_UDP
+  iptables -A INPUT -p icmp --icmp-type echo-request -j DROP \
+    && LOG_OK "ICMP echo-request (вход) заблокирован." \
+    || LOG_ERROR "Ошибка при блокировке входящих ICMP echo-request."
 
-  CHECK_TCP="$(lsof -i TCP:${PORT} 2>/dev/null)"
-  CHECK_UDP="$(lsof -i UDP:${PORT} 2>/dev/null)"
-
-  if [[ -n "${CHECK_TCP}" ]]; then
-    LOG_ERROR "Порт TCP/${PORT} уже занят! Возможны конфликты при запуске Outline на 443/TCP."
-  else
-    LOG_OK "Порт TCP/${PORT} свободен."
-  fi
-
-  if [[ -n "${CHECK_UDP}" ]]; then
-    LOG_ERROR "Порт UDP/${PORT} уже занят! Возможны конфликты при запуске Outline на 443/UDP."
-  else
-    LOG_OK "Порт UDP/${PORT} свободен."
-  fi
+  iptables -A OUTPUT -p icmp --icmp-type echo-reply -j DROP \
+    && LOG_OK "ICMP echo-reply (выход) заблокирован." \
+    || LOG_ERROR "Ошибка при блокировке исходящих ICMP echo-reply."
 }
 
-# -----------------------
-# 5. «Шифрование заголовков» (mangle/обфускация)
-# -----------------------
-function configure_header_encryption() {
-  LOG_INFO "Добавляем mangle-правило (пример для обфускации TCP-заголовков на порту 443)..."
-  if iptables -t mangle -A POSTROUTING -p tcp --dport 443 -j MARK --set-mark 1; then
-    LOG_OK "mangle-правило для порта 443 добавлено."
-  else
-    LOG_ERROR "Ошибка при добавлении mangle-правила для порта 443."
-  fi
+function configure_mtu() {
+  LOG_INFO "Устанавливаем MTU=1400 на eth0..."
+  ip link set dev eth0 mtu 1400 \
+    && LOG_OK "MTU установлен на 1400." \
+    || LOG_ERROR "Не удалось изменить MTU на eth0."
 }
 
+###############################################################################
+#        Раздел 4. Генерация сертификатов/ключей, настройка Outline Server    #
+###############################################################################
 
-##############################################################################
-#                         ПРЕДВАРИТЕЛЬНАЯ ПОДГОТОВКА                         #
-##############################################################################
+SHADOWBOX_DIR="/opt/outline"
+PERSISTED_STATE_DIR="${SHADOWBOX_DIR}/persisted-state"
+ACCESS_CONFIG="${SHADOWBOX_DIR}/access.txt"
+API_PORT=443  # Используем порт 443 для Outline
 
-function display_usage() {
-  cat <<EOF
-Usage: $0 [--hostname <hostname>] [--api-port <port>] [--keys-port <port>]
-  --hostname   Хостнейм (или IP) для доступа к Management API и ключам
-  --api-port   Порт для Management API (по умолчанию случайный)
-  --keys-port  Порт для ключей доступа (по умолчанию случайный)
+function generate_cert_and_keys() {
+  LOG_INFO "Генерируем самоподписанный сертификат + ключ для Outline..."
+
+  mkdir -p "$PERSISTED_STATE_DIR"
+  local CERT_NAME="${PERSISTED_STATE_DIR}/shadowbox-selfsigned"
+  SB_CERTIFICATE_FILE="${CERT_NAME}.crt"
+  SB_PRIVATE_KEY_FILE="${CERT_NAME}.key"
+
+  # Определяем реальный IP (или fallback=127.0.0.1)
+  local SERVER_IP
+  SERVER_IP=$(curl -4s https://icanhazip.com || echo "127.0.0.1")
+
+  # Генерируем самоподписанный сертификат
+  openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
+    -subj "/CN=${SERVER_IP}" \
+    -keyout "${SB_PRIVATE_KEY_FILE}" \
+    -out "${SB_CERTIFICATE_FILE}" &>/dev/null
+
+  if [[ -s "$SB_CERTIFICATE_FILE" && -s "$SB_PRIVATE_KEY_FILE" ]]; then
+    LOG_OK "Сертификат и ключ созданы: ${SB_CERTIFICATE_FILE}, ${SB_PRIVATE_KEY_FILE}."
+  else
+    LOG_ERROR "Не удалось создать сертификат/ключ."
+  fi
+
+  # Генерируем секретный префикс
+  LOG_INFO "Генерируем секретный ключ (API_PREFIX)..."
+  local random_bytes
+  random_bytes="$(head -c 16 /dev/urandom | base64 | tr '+/' '-_' | tr -d '=')"
+  SB_API_PREFIX="$random_bytes"
+  LOG_OK "Секретный ключ API_PREFIX: ${SB_API_PREFIX}"
+
+  # Считаем SHA-256 отпечаток
+  local CERT_SHA256
+  CERT_SHA256=$(openssl x509 -in "$SB_CERTIFICATE_FILE" -noout -fingerprint -sha256 \
+    | sed 's/://g' | sed 's/^.*=//g')
+
+  # Записываем в access.txt
+  mkdir -p "$SHADOWBOX_DIR"
+  echo > "$ACCESS_CONFIG"  # очистим файл
+  echo "apiUrl:https://${SERVER_IP}:${API_PORT}/${SB_API_PREFIX}" >> "$ACCESS_CONFIG"
+  echo "certSha256:${CERT_SHA256}" >> "$ACCESS_CONFIG"
+
+  LOG_OK "Записано в $ACCESS_CONFIG: apiUrl, certSha256."
+}
+
+OUTLINE_MANAGER_CONFIG=""
+
+function build_outline_manager_config() {
+  LOG_INFO "Формируем JSON-строку для Outline Manager..."
+  local apiUrl
+  local certSha256
+  apiUrl=$(grep 'apiUrl:' "$ACCESS_CONFIG" | sed 's/apiUrl://')
+  certSha256=$(grep 'certSha256:' "$ACCESS_CONFIG" | sed 's/certSha256://')
+
+  OUTLINE_MANAGER_CONFIG="{\"apiUrl\":\"${apiUrl}\",\"certSha256\":\"${certSha256}\"}"
+  LOG_OK "JSON для Outline Manager: ${OUTLINE_MANAGER_CONFIG}"
+}
+
+###############################################################################
+#   Раздел 5. Запуск контейнеров (Shadowbox + Watchtower), проверка работы    #
+###############################################################################
+
+function start_outline_container() {
+  LOG_INFO "Готовим скрипт для запуска Shadowbox (Outline Server)..."
+
+  # Официальный образ
+  local SB_IMAGE="quay.io/outline/shadowbox:stable"
+
+  local START_SCRIPT="${PERSISTED_STATE_DIR}/start_container.sh"
+  cat <<-EOF > "${START_SCRIPT}"
+#!/usr/bin/env bash
+
+docker stop shadowbox 2>/dev/null || true
+docker rm -f shadowbox 2>/dev/null || true
+
+docker run -d --name shadowbox --restart always --net host \\
+  --label "com.centurylinklabs.watchtower.enable=true" \\
+  --label "com.centurylinklabs.watchtower.scope=outline" \\
+  --log-driver local \\
+  -v "${PERSISTED_STATE_DIR}:${PERSISTED_STATE_DIR}" \\
+  -e "SB_STATE_DIR=${PERSISTED_STATE_DIR}" \\
+  -e "SB_API_PORT=${API_PORT}" \\
+  -e "SB_API_PREFIX=${SB_API_PREFIX}" \\
+  -e "SB_CERTIFICATE_FILE=${SB_CERTIFICATE_FILE}" \\
+  -e "SB_PRIVATE_KEY_FILE=${SB_PRIVATE_KEY_FILE}" \\
+  "${SB_IMAGE}"
 EOF
-}
 
-# Проверка, является ли порт валидным
-function is_valid_port() {
-  (( 1 <= "$1" && "$1" <= 65535 ))
-}
+  chmod +x "${START_SCRIPT}"
 
-# Парсинг аргументов командной строки
-function parse_flags() {
-  while [[ $# -gt 0 ]]; do
-    case "$1" in
-      --hostname)
-        FLAGS_HOSTNAME="$2"
-        shift 2
-        ;;
-      --api-port)
-        FLAGS_API_PORT="$2"
-        if ! is_valid_port "${FLAGS_API_PORT}"; then
-          LOG_ERROR "Указан некорректный порт в --api-port: ${FLAGS_API_PORT}"
-        fi
-        shift 2
-        ;;
-      --keys-port)
-        FLAGS_KEYS_PORT="$2"
-        if ! is_valid_port "${FLAGS_KEYS_PORT}"; then
-          LOG_ERROR "Указан некорректный порт в --keys-port: ${FLAGS_KEYS_PORT}"
-        fi
-        shift 2
-        ;;
-      *)
-        LOG_WARN "Неизвестный параметр: $1"
-        shift
-        ;;
-    esac
-  done
-}
-
-
-##############################################################################
-#                    ОСНОВНАЯ УСТАНОВКА SHADOWBOX + WATCHTOWER               #
-##############################################################################
-
-function install_shadowbox() {
-  LOG_INFO "Начинаем установку и настройку Outline (Shadowbox) + Watchtower..."
-
-  # Убедимся, что мы на x86_64 (как в оригинальном скрипте)
-  MACHINE_TYPE="$(uname -m)"
-  if [[ "${MACHINE_TYPE}" != "x86_64" ]]; then
-    LOG_ERROR "Данная версия скрипта поддерживает только x86_64. Текущая архитектура: ${MACHINE_TYPE}"
-  fi
-
-  # Создадим структуру каталогов
-  SHADOWBOX_DIR="${SHADOWBOX_DIR:-/opt/outline}"
-  mkdir -p "${SHADOWBOX_DIR}" && chmod u+s,ug+rwx,o-rwx "${SHADOWBOX_DIR}"
-
-  # Определяем порты (если они не были указаны в аргументах)
-  if (( FLAGS_API_PORT == 0 )); then
-    FLAGS_API_PORT=$(( 1024 + RANDOM % 20000 ))
-  fi
-  if (( FLAGS_KEYS_PORT == 0 )); then
-    FLAGS_KEYS_PORT=$(( 1024 + RANDOM % 20000 ))
-  fi
-
-  LOG_INFO "Подготовка к запуску контейнера Shadowbox. Порты: API=${FLAGS_API_PORT}, KEYS=${FLAGS_KEYS_PORT}..."
-
-  # Запускаем контейнер Shadowbox (примерный вариант)
-  if docker run -d --name shadowbox --restart always \
-     --net host \
-     -e "SB_API_PORT=${FLAGS_API_PORT}" \
-     -e "SB_API_PREFIX=$(head -c 16 /dev/urandom | base64 | tr -dc 'A-Za-z0-9')" \
-     quay.io/outline/shadowbox:stable; then
+  # Запуск контейнера
+  LOG_INFO "Запускаем контейнер Shadowbox..."
+  if bash "${START_SCRIPT}"; then
     LOG_OK "Контейнер Shadowbox запущен."
   else
-    LOG_ERROR "Не удалось запустить контейнер Shadowbox."
+    LOG_ERROR "Не удалось запустить Shadowbox."
   fi
 
-  # Запускаем Watchtower
-  LOG_INFO "Запускаем Watchtower..."
-  if docker run -d --name watchtower --restart always \
-     -v /var/run/docker.sock:/var/run/docker.sock \
-     containrrr/watchtower --cleanup --interval 3600 --label-enable; then
-    LOG_OK "Watchtower успешно запущен."
+  LOG_INFO "Запускаем Watchtower для автообновления..."
+  docker run -d --name watchtower --restart always \
+    --label "com.centurylinklabs.watchtower.enable=true" \
+    --label "com.centurylinklabs.watchtower.scope=outline" \
+    -v /var/run/docker.sock:/var/run/docker.sock \
+    containrrr/watchtower --cleanup --label-enable --scope=outline --tlsverify --interval 3600 &>/dev/null \
+    && LOG_OK "Watchtower успешно запущен." \
+    || LOG_ERROR "Ошибка при запуске Watchtower."
+}
+
+function test_outline_installation() {
+  LOG_INFO "Проверяем запущенные контейнеры и порты..."
+
+  # Проверяем shadowbox
+  local sb
+  sb="$(docker ps --format '{{.Names}}' | grep '^shadowbox$' || true)"
+  if [[ -n "$sb" ]]; then
+    LOG_OK "Контейнер shadowbox работает."
   else
-    LOG_ERROR "Не удалось запустить Watchtower."
+    LOG_ERROR "Контейнер shadowbox не обнаружен среди работающих."
   fi
 
-  # Допустим, мы получили apiUrl и certSha256:
-  local TEST_APIURL="https://xxx.xxx.xxx.xxX:XXXXX/XXXxxxxxxxxxxxxxxxxxxx"
-  local TEST_CERT="XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-  CONFIG_STRING="{\"apiUrl\": \"${TEST_APIURL}\", \"certSha256\": \"${TEST_CERT}\"}"
-
-  # Сохраняем в глобальной переменной, чтобы потом распечатать
-  FINAL_KEYS+="\n--- Outline Config ---\n${CONFIG_STRING}\n"
-
-  # Тестовый ключ/пароль (просто пример)
-  local SOME_GENERATED_KEY="RANDOM_KEY_123"
-  FINAL_KEYS+="\n--- Некоторый ключ ---\n${SOME_GENERATED_KEY}\n"
-
-  # Проверяем, запустился ли контейнер
-  local SHADOWBOX_RUNNING
-  SHADOWBOX_RUNNING="$(docker ps --format '{{.Names}}' | grep -w shadowbox)"
-  if [[ -n "${SHADOWBOX_RUNNING}" ]]; then
-    LOG_OK "Контейнер Shadowbox подтверждён в списке работающих."
+  # Проверяем watchtower
+  local wt
+  wt="$(docker ps --format '{{.Names}}' | grep '^watchtower$' || true)"
+  if [[ -n "$wt" ]]; then
+    LOG_OK "Контейнер watchtower работает."
   else
-    LOG_ERROR "Контейнер Shadowbox отсутствует в списке работающих."
+    LOG_ERROR "Контейнер watchtower не обнаружен среди работающих."
+  fi
+
+  # Проверим, слушается ли 443 TCP
+  LOG_INFO "Проверяем порт 443 (TCP) через ss..."
+  if ss -tuln | grep -q ":443 "; then
+    LOG_OK "Порт 443 слушается."
+  else
+    LOG_ERROR "Порт 443 не обнаружен в списке слушающих!"
   fi
 }
 
+###############################################################################
+#               Раздел 6. Итоговый вывод (ключи, инструкции и т.д.)           #
+###############################################################################
 
-##############################################################################
-#                                   MAIN                                     #
-##############################################################################
+function print_instructions() {
+  LOG_INFO "Инструкция по использованию Outline VPN:"
+  echo "1) Скачайте Outline Manager и введите туда следующую строку (см. ниже)."
+  echo "2) Проверьте, что вы не можете «пропинговать» сервер (ICMP блокирован)."
+  echo "3) Если что-то не работает, посмотрите логи:"
+  echo "   docker logs shadowbox"
+  echo "   docker logs watchtower"
+}
+
+function print_final_data() {
+  LOG_INFO "=== Итоговая конфигурация для Outline Manager ==="
+  if [[ -n "${OUTLINE_MANAGER_CONFIG}" ]]; then
+    echo -e "${COLOR_GREEN}${OUTLINE_MANAGER_CONFIG}${COLOR_RESET}"
+  else
+    LOG_ERROR "OUTLINE_MANAGER_CONFIG не сформирован."
+  fi
+
+  LOG_OK "=== Содержимое ${ACCESS_CONFIG} ==="
+  cat "${ACCESS_CONFIG}"
+
+  if (( SCRIPT_ERRORS > 0 )); then
+    echo -e "${COLOR_RED}В ходе скрипта возникло ошибок: ${SCRIPT_ERRORS}. См. логи выше.${COLOR_RESET}"
+  else
+    echo -e "${COLOR_GREEN}Скрипт req1 выполнен без ошибок!${COLOR_RESET}"
+  fi
+}
+
+###############################################################################
+#                                 MAIN                                        #
+###############################################################################
 
 function main() {
-  LOG_INFO "Скрипт запущен. Начинаем установку всех необходимых компонентов..."
+  LOG_INFO "Запуск скрипта req1 (установка/настройка Outline + маскировка VPN)..."
 
-  # Парсим аргументы
-  parse_flags "$@"
+  check_root
+  install_docker_from_official_repo
+  install_required_packages
+  remove_old_outline
 
-  # Шаг 1. Установка базовых пакетов (curl, iptables, lsof для проверки портов)
-  install_package "curl"
-  install_package "iptables"
-  install_package "lsof"
-
-  # Шаг 2. Установка Docker (если не установлен)
-  ensure_docker_installed
-
-  # Шаг 3. Запуск docker-демона (если не запущен)
-  ensure_docker_running
-
-  # Шаг 4. Дополнительная настройка (обфускация/маскировка трафика)
-  LOG_INFO "==== ДОПОЛНИТЕЛЬНАЯ НАСТРОЙКА ДЛЯ СКРЫТИЯ VPN ===="
+  configure_nat
   configure_icmp
   configure_mtu
-  configure_nat
-  configure_ports
-  configure_header_encryption
 
-  # Шаг 5. Установка и настройка Outline + Watchtower
-  install_shadowbox
+  generate_cert_and_keys
+  build_outline_manager_config
 
-  # Шаг 6. Итоговый вывод. Сначала — конфигурационная строка для Outline Manager.
-  LOG_INFO "==== ИТОГОВЫЕ ДАННЫЕ ДЛЯ КЛИЕНТА ===="
-  if [[ -n "${CONFIG_STRING}" ]]; then
-    echo -e "${GREEN}Конфигурационная строка для Outline Manager:${RESET}"
-    echo -e "${GREEN}${CONFIG_STRING}${RESET}"
-  else
-    LOG_ERROR "Конфигурационная строка Outline Manager не сформирована."
-  fi
+  start_outline_container
+  test_outline_installation
 
-  if [[ -n "${FINAL_KEYS}" ]]; then
-    echo -e "${BLUE}Прочие сгенерированные данные:${RESET}"
-    echo -e "${FINAL_KEYS}"
-  else
-    LOG_ERROR "Нет дополнительных ключей/паролей/сертификатов для вывода."
-  fi
-
-  # Завершаем, сообщая об ошибках (если были)
-  if (( SCRIPT_ERRORS > 0 )); then
-    LOG_WARN "Скрипт завершился с ошибками/предупреждениями (кол-во ошибок: ${SCRIPT_ERRORS}). Проверьте логи выше."
-  else
-    LOG_OK "Скрипт выполнен успешно, ошибок не зафиксировано."
-  fi
+  print_instructions
+  print_final_data
 }
 
 main "$@"
