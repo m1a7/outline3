@@ -1,17 +1,16 @@
 #!/usr/bin/env bash
 ###############################################################################
-#  req1: Скрипт для установки и настройки Outline (Shadowbox) + обфускации.
-#  ---------------------------------------------------------------------------
-#  1. Устанавливает Docker из репозитория Docker (download.docker.com).
-#  2. Устанавливает необходимые пакеты: iptables, openssl, jq, net-tools и т.д.
-#  3. Удаляет старые версии Outline (shadowbox, watchtower) и старые сертификаты.
-#  4. Настраивает NAT (MASQUERADE), блокировку ICMP, MTU.
-#  5. Генерирует самоподписанный сертификат, ключи, SHA-256 fingerprint.
-#  6. Запускает контейнеры Outline (shadowbox) и Watchtower.
-#  7. Выводит конечную конфигурацию (JSON) и инструкции по подключению.
+#  req1 (обновлённый): 
+#   - Менеджерский API Outline: порт 8181
+#   - VPN (Shadowsocks) трафик: порт 443
 #
-#  Скрипт не прерывается при ошибках (не вызывает exit), а логирует их 
-#  и в конце оповещает о количестве проблем, если они были.
+#  1. Устанавливает Docker (из репозитория Docker).
+#  2. Устанавливает необходимые пакеты (iptables, openssl, jq, net-tools, coreutils, curl).
+#  3. Удаляет старые версии Outline (shadowbox, watchtower) и файлы /opt/outline.
+#  4. Настраивает NAT, ICMP-блокировку, MTU.
+#  5. Генерирует сертификаты, ключи, конфигурацию, записывает всё в /opt/outline/.
+#  6. Запускает контейнер Outline (Shadowbox) + Watchtower.
+#  7. Менеджерский API на порту 8181, Shadowsocks-порт для ключей: 443.
 ###############################################################################
 
 #####################
@@ -48,7 +47,7 @@ function check_root() {
   fi
 }
 
-# Добавляем репозиторий Docker и устанавливаем Docker CE (как в вашем примере)
+# Добавляем репозиторий Docker и устанавливаем Docker CE
 function install_docker_from_official_repo() {
   LOG_INFO "Проверяем, установлен ли Docker..."
   if ! command -v docker &> /dev/null; then
@@ -176,7 +175,11 @@ function configure_mtu() {
 SHADOWBOX_DIR="/opt/outline"
 PERSISTED_STATE_DIR="${SHADOWBOX_DIR}/persisted-state"
 ACCESS_CONFIG="${SHADOWBOX_DIR}/access.txt"
-API_PORT=443  # Используем порт 443 для Outline
+
+#  Менеджерский API — пусть будет порт 8181
+API_PORT=8181
+#  VPN (Shadowsocks) трафик — порт 443
+KEYS_PORT=443
 
 function generate_cert_and_keys() {
   LOG_INFO "Генерируем самоподписанный сертификат + ключ для Outline..."
@@ -214,21 +217,22 @@ function generate_cert_and_keys() {
   CERT_SHA256=$(openssl x509 -in "$SB_CERTIFICATE_FILE" -noout -fingerprint -sha256 \
     | sed 's/://g' | sed 's/^.*=//g')
 
-  # Записываем в access.txt
+  # Запишем доступную информацию в ACCESS_CONFIG
   mkdir -p "$SHADOWBOX_DIR"
   echo > "$ACCESS_CONFIG"  # очистим файл
   echo "apiUrl:https://${SERVER_IP}:${API_PORT}/${SB_API_PREFIX}" >> "$ACCESS_CONFIG"
   echo "certSha256:${CERT_SHA256}" >> "$ACCESS_CONFIG"
+  # Можно также зафиксировать, на каком порту VPN:
+  echo "keysPort:${KEYS_PORT}" >> "$ACCESS_CONFIG"
 
-  LOG_OK "Записано в $ACCESS_CONFIG: apiUrl, certSha256."
+  LOG_OK "Записано в $ACCESS_CONFIG: apiUrl, certSha256, keysPort."
 }
 
 OUTLINE_MANAGER_CONFIG=""
 
 function build_outline_manager_config() {
   LOG_INFO "Формируем JSON-строку для Outline Manager..."
-  local apiUrl
-  local certSha256
+  local apiUrl certSha256
   apiUrl=$(grep 'apiUrl:' "$ACCESS_CONFIG" | sed 's/apiUrl://')
   certSha256=$(grep 'certSha256:' "$ACCESS_CONFIG" | sed 's/certSha256://')
 
@@ -236,12 +240,25 @@ function build_outline_manager_config() {
   LOG_OK "JSON для Outline Manager: ${OUTLINE_MANAGER_CONFIG}"
 }
 
+# Пишем shadowbox_server_config.json, чтобы задать порт для новых ключей = 443
+function write_shadowbox_config_json() {
+  LOG_INFO "Создаём shadowbox_server_config.json, чтобы Outline слушал VPN-трафик на 443..."
+  cat <<EOF > "${PERSISTED_STATE_DIR}/shadowbox_server_config.json"
+{
+  "portForNewAccessKeys": ${KEYS_PORT},
+  "hostname": "0.0.0.0"
+}
+EOF
+  LOG_OK "Файл shadowbox_server_config.json создан."
+}
+
+
 ###############################################################################
 #   Раздел 5. Запуск контейнеров (Shadowbox + Watchtower), проверка работы    #
 ###############################################################################
 
 function start_outline_container() {
-  LOG_INFO "Готовим скрипт для запуска Shadowbox (Outline Server)..."
+  LOG_INFO "Готовим скрипт для запуска Shadowbox (Outline Server) на порту API=${API_PORT}, KEYS=${KEYS_PORT}..."
 
   # Официальный образ
   local SB_IMAGE="quay.io/outline/shadowbox:stable"
@@ -263,6 +280,11 @@ docker run -d --name shadowbox --restart always --net host \\
   -e "SB_API_PREFIX=${SB_API_PREFIX}" \\
   -e "SB_CERTIFICATE_FILE=${SB_CERTIFICATE_FILE}" \\
   -e "SB_PRIVATE_KEY_FILE=${SB_PRIVATE_KEY_FILE}" \\
+  -e "SB_IMAGE=${SB_IMAGE}" \\
+
+  # Shadowbox при запуске прочитает shadowbox_server_config.json (portForNewAccessKeys=443)
+  # и будет слушать VPN (Shadowsocks) на 443, API на 8181.
+
   "${SB_IMAGE}"
 EOF
 
@@ -289,7 +311,6 @@ EOF
 function test_outline_installation() {
   LOG_INFO "Проверяем запущенные контейнеры и порты..."
 
-  # Проверяем shadowbox
   local sb
   sb="$(docker ps --format '{{.Names}}' | grep '^shadowbox$' || true)"
   if [[ -n "$sb" ]]; then
@@ -298,7 +319,6 @@ function test_outline_installation() {
     LOG_ERROR "Контейнер shadowbox не обнаружен среди работающих."
   fi
 
-  # Проверяем watchtower
   local wt
   wt="$(docker ps --format '{{.Names}}' | grep '^watchtower$' || true)"
   if [[ -n "$wt" ]]; then
@@ -307,12 +327,20 @@ function test_outline_installation() {
     LOG_ERROR "Контейнер watchtower не обнаружен среди работающих."
   fi
 
-  # Проверим, слушается ли 443 TCP
-  LOG_INFO "Проверяем порт 443 (TCP) через ss..."
-  if ss -tuln | grep -q ":443 "; then
-    LOG_OK "Порт 443 слушается."
+  # Проверяем Management API (8181)
+  LOG_INFO "Проверяем порт ${API_PORT} (Management API) через ss..."
+  if ss -tuln | grep -q ":${API_PORT} "; then
+    LOG_OK "Порт ${API_PORT} (API) слушается."
   else
-    LOG_ERROR "Порт 443 не обнаружен в списке слушающих!"
+    LOG_ERROR "Порт ${API_PORT} не обнаружен в списке слушающих!"
+  fi
+
+  # Проверяем VPN (443)
+  LOG_INFO "Проверяем порт ${KEYS_PORT} (VPN-трафик) через ss..."
+  if ss -tuln | grep -q ":${KEYS_PORT} "; then
+    LOG_OK "Порт ${KEYS_PORT} (VPN) слушается."
+  else
+    LOG_ERROR "Порт ${KEYS_PORT} не обнаружен в списке слушающих!"
   fi
 }
 
@@ -322,11 +350,10 @@ function test_outline_installation() {
 
 function print_instructions() {
   LOG_INFO "Инструкция по использованию Outline VPN:"
-  echo "1) Скачайте Outline Manager и введите туда следующую строку (см. ниже)."
-  echo "2) Проверьте, что вы не можете «пропинговать» сервер (ICMP блокирован)."
-  echo "3) Если что-то не работает, посмотрите логи:"
-  echo "   docker logs shadowbox"
-  echo "   docker logs watchtower"
+  echo "1) Менеджерский API слушается на порту ${API_PORT} (https://<IP>:8181/<apiPrefix>)."
+  echo "2) VPN (Shadowsocks) идёт через 443."
+  echo "3) Проверьте, что ping (ICMP) к серверу не проходит, а трафик Outline — работает."
+  echo "4) Скопируйте конфигурацию ниже в Outline Manager."
 }
 
 function print_final_data() {
@@ -352,7 +379,7 @@ function print_final_data() {
 ###############################################################################
 
 function main() {
-  LOG_INFO "Запуск скрипта req1 (установка/настройка Outline + маскировка VPN)..."
+  LOG_INFO "Запуск скрипта req1 (Management API на 8181, VPN-трафик на 443)..."
 
   check_root
   install_docker_from_official_repo
@@ -365,6 +392,7 @@ function main() {
 
   generate_cert_and_keys
   build_outline_manager_config
+  write_shadowbox_config_json
 
   start_outline_container
   test_outline_installation
