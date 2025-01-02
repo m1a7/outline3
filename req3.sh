@@ -1,17 +1,21 @@
 #!/usr/bin/env bash
 #
-# Пример установки Shadowsocks (shadowsocks-libev) + v2ray-plugin в Docker
-# с самоподписанными сертификатами и базовой настройкой iptables.
-# НЕТ интеграции с Outline Manager.
+# Установочный и конфигурационный скрипт для Shadowsocks VPN с обфускацией трафика через v2ray-plugin.
+# Включает удаление старых версий, установку Docker, настройку iptables,
+# генерацию сертификатов, запуск контейнеров, и вывод ss:// ссылки.
 #
+
+set -euo pipefail  # Улучшенная обработка ошибок
 
 ###############################################################################
 # Глобальные переменные и настройки
 ###############################################################################
+
 SCRIPT_ERRORS=0
 
 # Названия контейнеров и директории
 SHADOWSOCKS_CONTAINER="shadowsocks_v2ray"
+WATCHTOWER_CONTAINER="watchtower"
 OUTLINE_DIR="/opt/outline"
 STATE_DIR="${OUTLINE_DIR}/persisted-state"
 
@@ -21,8 +25,10 @@ MTU_VALUE="1400"
 
 # Порт Shadowsocks (на котором будем слушать)
 SHADOWSOCKS_PORT="443"
+
 # Метод шифрования (рекомендуем AEAD, напр. chacha20-ietf-poly1305 или aes-256-gcm)
 SHADOWSOCKS_METHOD="chacha20-ietf-poly1305"
+
 # Срок действия самоподписанного сертификата
 CERT_DAYS="3650"  # ~10 лет
 
@@ -30,42 +36,60 @@ CERT_DAYS="3650"  # ~10 лет
 DOCKER_GPG_KEY_URL="https://download.docker.com/linux/ubuntu/gpg"
 DOCKER_REPO="https://download.docker.com/linux/ubuntu"
 
+# Введите ваш домен здесь или передайте как аргумент
+DOMAIN="${1:-example.com}"
+
 # Цвета для логов
 COLOR_RESET="\033[0m"
-COLOR_INFO="\033[0;36m"    
-COLOR_OK="\033[0;32m"      
-COLOR_WARN="\033[0;33m"    
-COLOR_ERROR="\033[0;31m"   
+COLOR_INFO="\033[0;36m"    # голубой
+COLOR_OK="\033[0;32m"      # зелёный
+COLOR_WARN="\033[0;33m"    # жёлтый
+COLOR_ERROR="\033[0;31m"   # красный
 
 ###############################################################################
 # Функции логирования
 ###############################################################################
-LOG_INFO()  { echo -e "${COLOR_INFO}[INFO]${COLOR_RESET} $*"; }
-LOG_OK()    { echo -e "${COLOR_OK}[OK]${COLOR_RESET}   $*"; }
-LOG_WARN()  { echo -e "${COLOR_WARN}[WARN]${COLOR_RESET} $*"; }
-LOG_ERROR() { echo -e "${COLOR_ERROR}[ERROR]${COLOR_RESET} $*"; ((SCRIPT_ERRORS++)); }
+LOG_INFO() {
+  echo -e "${COLOR_INFO}[INFO]${COLOR_RESET} $*"
+}
+
+LOG_OK() {
+  echo -e "${COLOR_OK}[OK]${COLOR_RESET}   $*"
+}
+
+LOG_WARN() {
+  echo -e "${COLOR_WARN}[WARN]${COLOR_RESET} $*"
+}
+
+LOG_ERROR() {
+  echo -e "${COLOR_ERROR}[ERROR]${COLOR_RESET} $*"
+  ((SCRIPT_ERRORS++))
+}
 
 ###############################################################################
-# Проверка наличия команды в PATH
+# Функция проверки наличия команды в PATH
 ###############################################################################
 command_exists() {
   command -v "$1" &>/dev/null
 }
 
 ###############################################################################
-# 1. Удаляем старый контейнер (если есть), а также директорию /opt/outline
+# 1. Удаляем старые контейнеры Shadowsocks и Watchtower (если есть),
+#    а также директорию /opt/outline
 ###############################################################################
 remove_old_containers_and_dir() {
-  LOG_INFO "Удаляем старый контейнер ($SHADOWSOCKS_CONTAINER) и директорию $OUTLINE_DIR"
+  LOG_INFO "Удаляем старые контейнеры ($SHADOWSOCKS_CONTAINER, $WATCHTOWER_CONTAINER) и директорию $OUTLINE_DIR"
   
-  # Останавливаем и удаляем контейнер
-  if docker ps -a --format '{{.Names}}' | grep -q "^${SHADOWSOCKS_CONTAINER}$"; then
-    if ! docker rm -f "${SHADOWSOCKS_CONTAINER}" &>/dev/null; then
-      LOG_ERROR "Не удалось удалить контейнер ${SHADOWSOCKS_CONTAINER}"
-    else
-      LOG_OK "Контейнер ${SHADOWSOCKS_CONTAINER} удалён"
+  # Останавливаем и удаляем контейнеры
+  for container in "${SHADOWSOCKS_CONTAINER}" "${WATCHTOWER_CONTAINER}"; do
+    if docker ps -a --format '{{.Names}}' | grep -q "^${container}$"; then
+      if ! docker rm -f "${container}" &>/dev/null; then
+        LOG_ERROR "Не удалось удалить контейнер ${container}"
+      else
+        LOG_OK "Контейнер ${container} удалён"
+      fi
     fi
-  fi
+  done
 
   # Удаляем директорию /opt/outline
   if [ -d "${OUTLINE_DIR}" ]; then
@@ -89,23 +113,27 @@ install_docker() {
     return
   fi
 
+  # Обновляем apt и ставим зависимости для apt по https
   apt-get update -y && apt-get install -y ca-certificates curl gnupg lsb-release
   if [ $? -ne 0 ]; then
-    LOG_ERROR "Не удалось установить пакеты (ca-certificates, curl, gnupg, lsb-release)"
+    LOG_ERROR "Не удалось установить пакеты зависимости (ca-certificates, curl, gnupg, lsb-release)"
     return
   fi
   
+  # Добавляем GPG-ключ Docker
   curl -fsSL "${DOCKER_GPG_KEY_URL}" | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
   if [ $? -ne 0 ]; then
     LOG_ERROR "Не удалось загрузить или сохранить GPG-ключ Docker"
     return
   fi
 
+  # Добавляем репозиторий Docker в sources.list.d
   DISTRO_CODENAME="$(lsb_release -cs)"
   echo \
     "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] ${DOCKER_REPO} \
     ${DISTRO_CODENAME} stable" | tee /etc/apt/sources.list.d/docker.list >/dev/null
 
+  # Устанавливаем Docker CE, CLI, containerd, docker-compose-plugin
   apt-get update -y
   apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
   if [ $? -ne 0 ]; then
@@ -113,6 +141,7 @@ install_docker() {
     return
   fi
 
+  # Проверяем, что Docker установлен и включаем сервис
   systemctl enable docker
   systemctl start docker
 
@@ -183,7 +212,7 @@ generate_certs() {
   local SS_KEY_FILE="${CERTIFICATE_NAME}.key"
 
   openssl req -x509 -nodes -days "${CERT_DAYS}" -newkey rsa:2048 \
-    -subj "/CN=MyShadowsocksServer" \
+    -subj "/CN=${DOMAIN}" \
     -keyout "${SS_KEY_FILE}" \
     -out "${SS_CERT_FILE}" &>/dev/null
 
@@ -201,16 +230,22 @@ generate_certs() {
 ###############################################################################
 start_shadowsocks_v2ray_container() {
 
-  LOG_INFO "Запускаем контейнер Shadowsocks + v2ray-plugin (teddysun/shadowsocks-libev)"
+  LOG_INFO "Запускаем контейнер Shadowsocks + v2ray-plugin (shadowsocks/shadowsocks-libev)"
 
   # Генерируем случайный пароль для Shadowsocks
   local SS_PASSWORD
-  SS_PASSWORD="$(head -c 16 /dev/urandom | base64 | tr -d '+/=')"
+  SS_PASSWORD="$(head -c 16 /dev/urandom | base64 | tr -d '+/=' | cut -c1-16)"
   [ -z "${SS_PASSWORD}" ] && SS_PASSWORD="defaultPass123"
 
-  # Пути к сертификату/ключу
-  local SS_CERT_FILE="${STATE_DIR}/ss-selfsigned.crt"
-  local SS_KEY_FILE="${STATE_DIR}/ss-selfsigned.key"
+  # Пути к сертификату/ключу внутри контейнера
+  local SS_CERT_FILE="/etc/shadowsocks-libev/ss-selfsigned.crt"
+  local SS_KEY_FILE="/etc/shadowsocks-libev/ss-selfsigned.key"
+
+  # Проверка существования сертификатов
+  if [ ! -f "${STATE_DIR}/ss-selfsigned.crt" ] || [ ! -f "${STATE_DIR}/ss-selfsigned.key" ]; then
+    LOG_ERROR "Сертификаты не найдены в ${STATE_DIR}. Убедитесь, что функция generate_certs прошла успешно."
+    return 1
+  fi
 
   # Останавливаем и удаляем предыдущий контейнер (если есть)
   docker stop "${SHADOWSOCKS_CONTAINER}" 2>/dev/null || true
@@ -218,23 +253,22 @@ start_shadowsocks_v2ray_container() {
 
   # Запускаем Docker-контейнер
   #
-  # Обратите внимание:
-  #  - Плагин: "v2ray-plugin"
-  #  - PLUGIN_OPTS="server;tls;host=YOUR_DOMAIN;cert=/etc/shadowsocks-libev/tls.crt;key=/etc/shadowsocks-libev/tls.key"
-  #  - Пробрасываем порт SHADOWSOCKS_PORT (TCP+UDP)
-  #  - Монтируем папку STATE_DIR внутрь контейнера, чтобы plugin мог увидеть ssl-файлы.
+  # Используем официальное изображение shadowsocks/shadowsocks-libev
+  # Конфигурация задаётся через параметры командной строки
   #
   docker run -d \
     --name "${SHADOWSOCKS_CONTAINER}" \
     --restart always \
     --net=host \
     -v "${STATE_DIR}:/etc/shadowsocks-libev" \
-    -e SERVER_PORT="${SHADOWSOCKS_PORT}" \
-    -e PASSWORD="${SS_PASSWORD}" \
-    -e METHOD="${SHADOWSOCKS_METHOD}" \
-    -e PLUGIN="v2ray-plugin" \
-    -e PLUGIN_OPTS="server;tls;host=example.com;cert=/etc/shadowsocks-libev/ss-selfsigned.crt;key=/etc/shadowsocks-libev/ss-selfsigned.key" \
-    teddysun/shadowsocks-libev:latest
+    shadowsocks/shadowsocks-libev \
+    ss-server \
+      --server 0.0.0.0 \
+      --server-port "${SHADOWSOCKS_PORT}" \
+      --password "${SS_PASSWORD}" \
+      --method "${SHADOWSOCKS_METHOD}" \
+      --plugin v2ray-plugin \
+      --plugin-opts "server;tls;host=${DOMAIN};cert=${SS_CERT_FILE};key=${SS_KEY_FILE}"
 
   if [ $? -ne 0 ]; then
     LOG_ERROR "Не удалось запустить контейнер ${SHADOWSOCKS_CONTAINER}"
@@ -243,35 +277,66 @@ start_shadowsocks_v2ray_container() {
 
   LOG_OK "Контейнер ${SHADOWSOCKS_CONTAINER} запущен. Порт: ${SHADOWSOCKS_PORT}, пароль: ${SS_PASSWORD}"
 
-  # Сохраним параметры в текстовый файл для удобства
+  # Сохраняем параметры в текстовый файл для удобства
   {
     echo "ssPassword:${SS_PASSWORD}"
     echo "ssMethod:${SHADOWSOCKS_METHOD}"
     echo "ssPort:${SHADOWSOCKS_PORT}"
-    echo "tlsCert:${STATE_DIR}/ss-selfsigned.crt"
-    echo "tlsKey:${STATE_DIR}/ss-selfsigned.key"
+    echo "tlsCert:${SS_CERT_FILE}"
+    echo "tlsKey:${SS_KEY_FILE}"
   } > "${OUTLINE_DIR}/ss-config.txt"
+
+  LOG_OK "Конфигурация сохранена в ${OUTLINE_DIR}/ss-config.txt"
 }
 
 ###############################################################################
-# 7. Проверка контейнера и вывод ss:// ссылки
+# 7. Запуск Watchtower для автоматического обновления контейнеров
+###############################################################################
+start_watchtower() {
+  LOG_INFO "Запускаем контейнер Watchtower для автоматического обновления"
+
+  docker run -d \
+    --name "${WATCHTOWER_CONTAINER}" \
+    --restart always \
+    --net=host \
+    --label "com.centurylinklabs.watchtower.enable=true" \
+    --label "com.centurylinklabs.watchtower.scope=outline" \
+    -v /var/run/docker.sock:/var/run/docker.sock \
+    containrrr/watchtower \
+      --cleanup \
+      --label-enable \
+      --scope=outline \
+      --interval 3600
+
+  if [ $? -ne 0 ]; then
+    LOG_ERROR "Не удалось запустить контейнер ${WATCHTOWER_CONTAINER}"
+  else
+    LOG_OK "Контейнер ${WATCHTOWER_CONTAINER} запущен"
+  fi
+}
+
+###############################################################################
+# 8. Проверка контейнера и вывод ss:// ссылки
 ###############################################################################
 check_container_and_print_link() {
   LOG_INFO "Проверяем работу контейнера и выводим итоговую ss:// ссылку"
 
-  local RUNNING=$(docker ps --format '{{.Names}}' | grep -q "^${SHADOWSOCKS_CONTAINER}$" && echo 1 || echo 0)
-  if [ "${RUNNING}" -eq 1 ]; then
+  # Проверка, что контейнер запущен
+  local RUNNING
+  RUNNING=$(docker inspect -f '{{.State.Running}}' "${SHADOWSOCKS_CONTAINER}" 2>/dev/null || echo "false")
+  if [ "${RUNNING}" = "true" ]; then
     LOG_OK "Контейнер ${SHADOWSOCKS_CONTAINER} работает"
   else
-    LOG_ERROR "Контейнер ${SHADOWSOCKS_CONTAINER} не найден в docker ps"
+    LOG_ERROR "Контейнер ${SHADOWSOCKS_CONTAINER} не работает. Проверьте логи: docker logs ${SHADOWSOCKS_CONTAINER}"
+    return 1
   fi
 
-  # Проверка порта
+  # Проверка порта на хосте
   if command_exists ss; then
     if ss -tuln | grep -q ":${SHADOWSOCKS_PORT} "; then
       LOG_OK "Порт ${SHADOWSOCKS_PORT} слушается (TCP/UDP)"
     else
-      LOG_WARN "Порт ${SHADOWSOCKS_PORT} не слушается. Проверьте настройки."
+      LOG_WARN "Порт ${SHADOWSOCKS_PORT} не слушается. Проверьте настройки контейнера и файрвол."
     fi
   else
     LOG_WARN "Команда ss не найдена, пропускаем проверку портов"
@@ -280,30 +345,41 @@ check_container_and_print_link() {
   # Выводим ссылку ss://...
   # Читаем сохранённые параметры
   if [ -f "${OUTLINE_DIR}/ss-config.txt" ]; then
-    local SS_PASS="$(grep '^ssPassword:' "${OUTLINE_DIR}/ss-config.txt" | cut -d':' -f2-)"
-    local SS_METH="$(grep '^ssMethod:'   "${OUTLINE_DIR}/ss-config.txt" | cut -d':' -f2- | tr -d ' ')"
-    local SS_PORT="$(grep '^ssPort:'     "${OUTLINE_DIR}/ss-config.txt" | cut -d':' -f2- | tr -d ' ')"
+    local SS_PASS
+    SS_PASS="$(grep '^ssPassword:' "${OUTLINE_DIR}/ss-config.txt" | cut -d':' -f2-)"
+    local SS_METH
+    SS_METH="$(grep '^ssMethod:'   "${OUTLINE_DIR}/ss-config.txt" | cut -d':' -f2- | tr -d ' ')"
+    local SS_PORT
+    SS_PORT="$(grep '^ssPort:'     "${OUTLINE_DIR}/ss-config.txt" | cut -d':' -f2- | tr -d ' ')"
 
     # Определяем IP
-    local PUBLIC_IP="$(curl -s https://icanhazip.com/ | tr -d '\n')"
+    local PUBLIC_IP
+    PUBLIC_IP="$(curl -s https://icanhazip.com/ | tr -d '\n')"
     [ -z "${PUBLIC_IP}" ] && PUBLIC_IP="127.0.0.1"
+
+    # Проверяем, задан ли домен корректно
+    if [[ "${DOMAIN}" == "example.com" ]]; then
+      LOG_WARN "Вы используете дефолтный домен 'example.com'. Замените его на ваш реальный домен для корректной работы TLS."
+    fi
 
     # Формируем base64("method:password")
     local BASE64_PART
     BASE64_PART="$(echo -n "${SS_METH}:${SS_PASS}" | base64 | tr -d '=\n')"
 
-    # Формируем ссылку (пример без plugin=..., так как у Outline-клиента другое формирование;
-    # но если вы используете общий Shadowsocks-клиент, добавьте plugin=v2ray-plugin%3b..." и т.п.)
-    # Можно добавить "&outline=1", если хотите.
-    local SS_URL="ss://${BASE64_PART}@${PUBLIC_IP}:${SS_PORT}?plugin=v2ray-plugin%3bserver%3btls%3bhost%3dexample.com"
+    # Формируем ссылку
+    local SS_URL="ss://${BASE64_PART}@${PUBLIC_IP}:${SS_PORT}?plugin=v2ray-plugin%3bserver%3btls%3bhost%3d${DOMAIN}"
 
     echo
     LOG_INFO "Готовая ссылка Shadowsocks + v2ray-plugin:"
     echo -e "${COLOR_OK}${SS_URL}${COLOR_RESET}"
     echo
 
-    LOG_INFO "Убедитесь, что в plugin-opts клиента укажете: \"v2ray-plugin;tls;host=example.com\""
-    LOG_INFO "Если нужно, замените 'example.com' на ваш реальный домен/хост."
+    LOG_INFO "Убедитесь, что в клиенте Shadowsocks настроены следующие параметры плагина:"
+    LOG_INFO "  Plugin: v2ray-plugin"
+    LOG_INFO "  Plugin Options: server;tls;host=${DOMAIN}"
+    echo
+
+    LOG_INFO "Если у вас настроен реальный домен, убедитесь, что сертификат и ключ соответствуют этому домену."
   else
     LOG_ERROR "Файл с конфигурацией ${OUTLINE_DIR}/ss-config.txt не найден."
   fi
@@ -313,12 +389,19 @@ check_container_and_print_link() {
 # Основная логика (main)
 ###############################################################################
 main() {
+  # Проверяем, передан ли домен
+  if [ "${DOMAIN}" = "example.com" ]; then
+    LOG_WARN "Вы не задали домен. Используется дефолтный 'example.com'. Рекомендуется задать реальный домен."
+    LOG_WARN "Для задания домена, запустите скрипт с аргументом: ./script.sh yourdomain.com"
+  fi
+
   remove_old_containers_and_dir
   install_docker
   install_required_packages
   setup_iptables_and_network
-  generate_certs          # самоподписанные сертификаты для v2ray-plugin
+  generate_certs
   start_shadowsocks_v2ray_container
+  start_watchtower
   check_container_and_print_link
 
   echo
@@ -326,8 +409,15 @@ main() {
     LOG_OK "Скрипт выполнен успешно, ошибок не обнаружено."
   else
     LOG_ERROR "Скрипт завершён с проблемами. Количество ошибок: ${SCRIPT_ERRORS}"
+    LOG_ERROR "Проверьте логи выше для детальной информации."
   fi
 }
+
+# Проверка запуска от root
+if [ "$(id -u)" -ne 0 ]; then
+  LOG_ERROR "Скрипт должен запускаться от root. Используйте sudo."
+  exit 1
+fi
 
 # Запуск
 main
