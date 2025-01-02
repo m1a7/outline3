@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #
 # Установочный и конфигурационный скрипт для Shadowsocks VPN с обфускацией трафика через v2ray-plugin.
-# Включает удаление старых версий, установку Docker, настройку iptables,
+# Включает удаление старых версий, установку Docker, настройку сетевых параметров,
 # генерацию сертификатов, запуск контейнеров, автоматический выбор свободного порта,
-# открытие порта в файрволе, и вывод ss:// ссылки.
+# и вывод ss:// ссылки.
 #
 
 set -euo pipefail  # Улучшенная обработка ошибок
@@ -39,14 +39,14 @@ DOCKER_GPG_KEY_URL="https://download.docker.com/linux/ubuntu/gpg"
 DOCKER_REPO="https://download.docker.com/linux/ubuntu"
 
 # Введите ваш домен здесь или передайте как аргумент
-DOMAIN="${1:-example.com}"
+DOMAIN="${1:-google.com}"
 
 # Цвета для логов
 COLOR_RESET="\033[0m"
-COLOR_INFO="\033[0;36m"    # голубой
-COLOR_OK="\033[0;32m"      # зелёный
-COLOR_WARN="\033[0;33m"    # жёлтый
-COLOR_ERROR="\033[0;31m"   # красный
+COLOR_INFO="\033[0;36m"    # Голубой
+COLOR_OK="\033[0;32m"      # Зелёный
+COLOR_WARN="\033[0;33m"    # Жёлтый
+COLOR_ERROR="\033[0;31m"   # Красный
 
 ###############################################################################
 # Функции логирования
@@ -81,37 +81,19 @@ command_exists() {
 find_free_port() {
   LOG_INFO "Ищем свободный порт в диапазоне ${PORT_RANGE_START}-${PORT_RANGE_END}..."
 
-  for ((port=PORT_RANGE_START; port<=PORT_RANGE_END; port++)); do
+  for ((i=0; i<100; i++)); do
+    port=$((RANDOM % (PORT_RANGE_END - PORT_RANGE_START +1) + PORT_RANGE_START))
     if ! ss -tuln | grep -q ":${port} "; then
-      echo "${port}"
-      return 0
+      # Проверка для UDP
+      if ! ss -uln | grep -q ":${port} "; then
+        echo "${port}"
+        return 0
+      fi
     fi
   done
 
-  LOG_ERROR "Не удалось найти свободный порт в диапазоне ${PORT_RANGE_START}-${PORT_RANGE_END}"
+  LOG_ERROR "Не удалось найти свободный порт после 100 попыток в диапазоне ${PORT_RANGE_START}-${PORT_RANGE_END}"
   return 1
-}
-
-###############################################################################
-# Функция открытия порта в iptables
-###############################################################################
-open_port_in_iptables() {
-  local port="$1"
-  local proto="$2"  # tcp or udp
-
-  LOG_INFO "Открываем порт ${port}/${proto} в iptables..."
-
-  # Проверяем, существует ли уже правило
-  if iptables -C INPUT -p "${proto}" --dport "${port}" -j ACCEPT &>/dev/null; then
-    LOG_OK "Правило для порта ${port}/${proto} уже существует в iptables."
-  else
-    # Добавляем правило
-    if iptables -I INPUT -p "${proto}" --dport "${port}" -j ACCEPT; then
-      LOG_OK "Порт ${port}/${proto} успешно открыт в iptables."
-    else
-      LOG_ERROR "Не удалось открыть порт ${port}/${proto} в iptables."
-    fi
-  fi
 }
 
 ###############################################################################
@@ -211,19 +193,11 @@ install_required_packages() {
 # 4. Настройка NAT, блокировка ICMP, MTU
 ###############################################################################
 setup_iptables_and_network() {
-  LOG_INFO "Настраиваем iptables (MASQUERADE, блокировка ICMP), MTU"
-
-  # Маскарадинг для исходящего трафика
-  iptables -t nat -A POSTROUTING -o "${ETH_INTERFACE}" -j MASQUERADE
-  if [ $? -ne 0 ]; then
-    LOG_ERROR "Не удалось добавить правило iptables MASQUERADE"
-  else
-    LOG_OK "MASQUERADE успешно добавлен для интерфейса ${ETH_INTERFACE}"
-  fi
+  LOG_INFO "Настраиваем сетевые параметры: блокировка ICMP, установка MTU"
 
   # Блокируем ICMP (ping) входящий и исходящий
-  iptables -A INPUT -p icmp -j DROP
-  iptables -A OUTPUT -p icmp -j DROP
+  iptables -C INPUT -p icmp -j DROP &>/dev/null || iptables -A INPUT -p icmp -j DROP
+  iptables -C OUTPUT -p icmp -j DROP &>/dev/null || iptables -A OUTPUT -p icmp -j DROP
   if [ $? -ne 0 ]; then
     LOG_ERROR "Не удалось добавить правила iptables для блокировки ICMP"
   else
@@ -231,7 +205,7 @@ setup_iptables_and_network() {
   fi
 
   # Устанавливаем MTU
-  if ip link set dev "${ETH_INTERFACE}" mtu "${MTU_VALUE}"; then
+  if ip link set dev "${ETH_INTERFACE}" mtu "${MTU_VALUE}" &>/dev/null; then
     LOG_OK "MTU=${MTU_VALUE} установлен на интерфейсе ${ETH_INTERFACE}"
   else
     LOG_ERROR "Не удалось установить MTU=${MTU_VALUE} на интерфейсе ${ETH_INTERFACE}"
@@ -289,8 +263,8 @@ start_shadowsocks_v2ray_container() {
   fi
 
   # Останавливаем и удаляем предыдущий контейнер (если есть)
-  docker stop "${SHADOWSOCKS_CONTAINER}" 2>/dev/null || true
-  docker rm -f "${SHADOWSOCKS_CONTAINER}" 2>/dev/null || true
+  docker stop "${SHADOWSOCKS_CONTAINER}" &>/dev/null || true
+  docker rm -f "${SHADOWSOCKS_CONTAINER}" &>/dev/null || true
 
   # Запускаем Docker-контейнер
   #
@@ -396,8 +370,8 @@ check_container_and_print_link() {
     [ -z "${PUBLIC_IP}" ] && PUBLIC_IP="127.0.0.1"
 
     # Проверяем, задан ли домен корректно
-    if [[ "${DOMAIN}" == "example.com" ]]; then
-      LOG_WARN "Вы используете дефолтный домен 'example.com'. Замените его на ваш реальный домен для корректной работы TLS."
+    if [[ "${DOMAIN}" == "google.com" ]]; then
+      LOG_WARN "Вы используете дефолтный домен 'google.com'. Замените его на ваш реальный домен для корректной работы TLS."
     fi
 
     # Формируем base64("method:password")
@@ -428,9 +402,9 @@ check_container_and_print_link() {
 ###############################################################################
 main() {
   # Проверяем, передан ли домен
-  if [ "${DOMAIN}" = "example.com" ]; then
-    LOG_WARN "Вы не задали домен. Используется дефолтный 'example.com'. Рекомендуется задать реальный домен."
-    LOG_WARN "Для задания домена, запустите скрипт с аргументом: ./setup_shadowsocks.sh yourdomain.com"
+  if [ "${DOMAIN}" = "google.com" ]; then
+    LOG_WARN "Вы не задали домен. Используется дефолтный 'google.com'. Рекомендуется задать реальный домен."
+    LOG_WARN "Для задания домена, запустите скрипт с аргументом: sudo ./setup_shadowsocks.sh yourdomain.com"
   fi
 
   # Удаляем старые контейнеры и директории
@@ -442,7 +416,7 @@ main() {
   # Устанавливаем необходимые пакеты
   install_required_packages
 
-  # Настраиваем iptables и сетевые параметры
+  # Настраиваем сетевые параметры
   setup_iptables_and_network
 
   # Генерируем сертификаты
@@ -455,10 +429,6 @@ main() {
     exit 1
   }
   LOG_OK "Выбран свободный порт: ${CHOSEN_PORT}"
-
-  # Открываем выбранный порт в iptables для TCP и UDP
-  open_port_in_iptables "${CHOSEN_PORT}" "tcp"
-  open_port_in_iptables "${CHOSEN_PORT}" "udp"
 
   # Обновляем переменную порта для Shadowsocks
   SHADOWSOCKS_PORT="${CHOSEN_PORT}"
