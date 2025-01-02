@@ -52,19 +52,19 @@ COLOR_ERROR="\033[0;31m"   # красный
 # Функции логирования
 ###############################################################################
 LOG_INFO() {
-  echo -e "${COLOR_INFO}[INFO]${COLOR_RESET} $*"
+  echo -e "${COLOR_INFO}[INFO]${COLOR_RESET} $*" >&2
 }
 
 LOG_OK() {
-  echo -e "${COLOR_OK}[OK]${COLOR_RESET}   $*"
+  echo -e "${COLOR_OK}[OK]${COLOR_RESET}   $*" >&2
 }
 
 LOG_WARN() {
-  echo -e "${COLOR_WARN}[WARN]${COLOR_RESET} $*"
+  echo -e "${COLOR_WARN}[WARN]${COLOR_RESET} $*" >&2
 }
 
 LOG_ERROR() {
-  echo -e "${COLOR_ERROR}[ERROR]${COLOR_RESET} $*"
+  echo -e "${COLOR_ERROR}[ERROR]${COLOR_RESET} $*" >&2
   ((SCRIPT_ERRORS++))
 }
 
@@ -271,7 +271,7 @@ generate_certs() {
 ###############################################################################
 start_shadowsocks_v2ray_container() {
 
-  LOG_INFO "Запускаем контейнер Shadowsocks + v2ray-plugin (shadowsocks/shadowsocks-libev)"
+  LOG_INFO "Запускаем контейнер Shadowsocks + v2ray-plugin (teddysun/shadowsocks-libev)"
 
   # Генерируем случайный пароль для Shadowsocks
   local SS_PASSWORD
@@ -294,22 +294,19 @@ start_shadowsocks_v2ray_container() {
 
   # Запускаем Docker-контейнер
   #
-  # Используем официальное изображение shadowsocks/shadowsocks-libev
-  # Конфигурация задаётся через параметры командной строки
+  # Используем Docker-образ teddysun/shadowsocks-libev, который включает v2ray-plugin
+  # Конфигурация задаётся через переменные окружения
   #
   docker run -d \
     --name "${SHADOWSOCKS_CONTAINER}" \
     --restart always \
     --net=host \
     -v "${STATE_DIR}:/etc/shadowsocks-libev" \
-    shadowsocks/shadowsocks-libev \
-    ss-server \
-      --server 0.0.0.0 \
-      --server-port "${SHADOWSOCKS_PORT}" \
-      --password "${SS_PASSWORD}" \
-      --method "${SHADOWSOCKS_METHOD}" \
-      --plugin v2ray-plugin \
-      --plugin-opts "server;tls;host=${DOMAIN};cert=${SS_CERT_FILE};key=${SS_KEY_FILE}"
+    -e PASSWORD="${SS_PASSWORD}" \
+    -e METHOD="${SHADOWSOCKS_METHOD}" \
+    -e PLUGIN="v2ray-plugin" \
+    -e PLUGIN_OPTS="server;tls;host=${DOMAIN};cert=${SS_CERT_FILE};key=${SS_KEY_FILE}" \
+    teddysun/shadowsocks-libev:latest
 
   if [ $? -ne 0 ]; then
     LOG_ERROR "Не удалось запустить контейнер ${SHADOWSOCKS_CONTAINER}"
@@ -318,7 +315,7 @@ start_shadowsocks_v2ray_container() {
 
   LOG_OK "Контейнер ${SHADOWSOCKS_CONTAINER} запущен. Порт: ${SHADOWSOCKS_PORT}, пароль: ${SS_PASSWORD}"
 
-  # Сохраняем параметры в текстовый файл для удобства
+  # Сохраним параметры в текстовый файл для удобства
   {
     echo "ssPassword:${SS_PASSWORD}"
     echo "ssMethod:${SHADOWSOCKS_METHOD}"
@@ -383,8 +380,6 @@ check_container_and_print_link() {
     LOG_WARN "Команда ss не найдена, пропускаем проверку портов"
   fi
 
-  # Выбор свободного порта и его использование уже сделано ранее
-
   # Выводим ссылку ss://...
   # Читаем сохранённые параметры
   if [ -f "${OUTLINE_DIR}/ss-config.txt" ]; then
@@ -435,7 +430,7 @@ main() {
   # Проверяем, передан ли домен
   if [ "${DOMAIN}" = "example.com" ]; then
     LOG_WARN "Вы не задали домен. Используется дефолтный 'example.com'. Рекомендуется задать реальный домен."
-    LOG_WARN "Для задания домена, запустите скрипт с аргументом: ./script.sh yourdomain.com"
+    LOG_WARN "Для задания домена, запустите скрипт с аргументом: ./setup_shadowsocks.sh yourdomain.com"
   fi
 
   # Удаляем старые контейнеры и директории
@@ -486,7 +481,9 @@ main() {
   fi
 }
 
+###############################################################################
 # Проверка запуска от root
+###############################################################################
 if [ "$(id -u)" -ne 0 ]; then
   LOG_ERROR "Скрипт должен запускаться от root. Используйте sudo."
   exit 1
