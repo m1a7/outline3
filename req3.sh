@@ -2,7 +2,8 @@
 #
 # Установочный и конфигурационный скрипт для Shadowsocks VPN с обфускацией трафика через v2ray-plugin.
 # Включает удаление старых версий, установку Docker, настройку iptables,
-# генерацию сертификатов, запуск контейнеров, и вывод ss:// ссылки.
+# генерацию сертификатов, запуск контейнеров, автоматический выбор свободного порта,
+# открытие порта в файрволе, и вывод ss:// ссылки.
 #
 
 set -euo pipefail  # Улучшенная обработка ошибок
@@ -23,8 +24,9 @@ STATE_DIR="${OUTLINE_DIR}/persisted-state"
 ETH_INTERFACE="eth0"         # Ваш основной сетевой интерфейс
 MTU_VALUE="1400"
 
-# Порт Shadowsocks (на котором будем слушать)
-SHADOWSOCKS_PORT="443"
+# Диапазон портов для выбора Shadowsocks
+PORT_RANGE_START=20000
+PORT_RANGE_END=60000
 
 # Метод шифрования (рекомендуем AEAD, напр. chacha20-ietf-poly1305 или aes-256-gcm)
 SHADOWSOCKS_METHOD="chacha20-ietf-poly1305"
@@ -37,7 +39,7 @@ DOCKER_GPG_KEY_URL="https://download.docker.com/linux/ubuntu/gpg"
 DOCKER_REPO="https://download.docker.com/linux/ubuntu"
 
 # Введите ваш домен здесь или передайте как аргумент
-DOMAIN="${1:-google.com}"
+DOMAIN="${1:-example.com}"
 
 # Цвета для логов
 COLOR_RESET="\033[0m"
@@ -74,11 +76,50 @@ command_exists() {
 }
 
 ###############################################################################
+# Функция выбора свободного порта
+###############################################################################
+find_free_port() {
+  LOG_INFO "Ищем свободный порт в диапазоне ${PORT_RANGE_START}-${PORT_RANGE_END}..."
+
+  for ((port=PORT_RANGE_START; port<=PORT_RANGE_END; port++)); do
+    if ! ss -tuln | grep -q ":${port} "; then
+      echo "${port}"
+      return 0
+    fi
+  done
+
+  LOG_ERROR "Не удалось найти свободный порт в диапазоне ${PORT_RANGE_START}-${PORT_RANGE_END}"
+  return 1
+}
+
+###############################################################################
+# Функция открытия порта в iptables
+###############################################################################
+open_port_in_iptables() {
+  local port="$1"
+  local proto="$2"  # tcp or udp
+
+  LOG_INFO "Открываем порт ${port}/${proto} в iptables..."
+
+  # Проверяем, существует ли уже правило
+  if iptables -C INPUT -p "${proto}" --dport "${port}" -j ACCEPT &>/dev/null; then
+    LOG_OK "Правило для порта ${port}/${proto} уже существует в iptables."
+  else
+    # Добавляем правило
+    if iptables -I INPUT -p "${proto}" --dport "${port}" -j ACCEPT; then
+      LOG_OK "Порт ${port}/${proto} успешно открыт в iptables."
+    else
+      LOG_ERROR "Не удалось открыть порт ${port}/${proto} в iptables."
+    fi
+  fi
+}
+
+###############################################################################
 # 1. Удаляем старые контейнеры Shadowsocks и Watchtower (если есть),
 #    а также директорию /opt/outline
 ###############################################################################
 remove_old_containers_and_dir() {
-  LOG_INFO "Удаляем старые контейнеры ($SHADOWSOCKS_CONTAINER, $WATCHTOWER_CONTAINER) и директорию $OUTLINE_DIR"
+  LOG_INFO "Удаляем старые контейнеры (${SHADOWSOCKS_CONTAINER}, ${WATCHTOWER_CONTAINER}) и директорию ${OUTLINE_DIR}"
   
   # Останавливаем и удаляем контейнеры
   for container in "${SHADOWSOCKS_CONTAINER}" "${WATCHTOWER_CONTAINER}"; do
@@ -156,7 +197,7 @@ install_docker() {
 # 3. Установка необходимых пакетов (iptables, openssl, jq, net-tools, curl и т.д.)
 ###############################################################################
 install_required_packages() {
-  LOG_INFO "Устанавливаем необходимые пакеты (iptables, openssl, jq, net-tools, curl и т.д.)"
+  LOG_INFO "Устанавливаем необходимые пакеты (iptables, openssl, jq, net-tools, curl, coreutils и т.д.)"
   apt-get update -y
   apt-get install -y iptables openssl jq net-tools curl coreutils
   if [ $? -ne 0 ]; then
@@ -342,6 +383,8 @@ check_container_and_print_link() {
     LOG_WARN "Команда ss не найдена, пропускаем проверку портов"
   fi
 
+  # Выбор свободного порта и его использование уже сделано ранее
+
   # Выводим ссылку ss://...
   # Читаем сохранённые параметры
   if [ -f "${OUTLINE_DIR}/ss-config.txt" ]; then
@@ -358,8 +401,8 @@ check_container_and_print_link() {
     [ -z "${PUBLIC_IP}" ] && PUBLIC_IP="127.0.0.1"
 
     # Проверяем, задан ли домен корректно
-    if [[ "${DOMAIN}" == "google.com" ]]; then
-      LOG_WARN "Вы используете дефолтный домен 'google.com'. Замените его на ваш реальный домен для корректной работы TLS."
+    if [[ "${DOMAIN}" == "example.com" ]]; then
+      LOG_WARN "Вы используете дефолтный домен 'example.com'. Замените его на ваш реальный домен для корректной работы TLS."
     fi
 
     # Формируем base64("method:password")
@@ -390,18 +433,48 @@ check_container_and_print_link() {
 ###############################################################################
 main() {
   # Проверяем, передан ли домен
-  if [ "${DOMAIN}" = "google.com" ]; then
-    LOG_WARN "Вы не задали домен. Используется дефолтный 'google.com'. Рекомендуется задать реальный домен."
+  if [ "${DOMAIN}" = "example.com" ]; then
+    LOG_WARN "Вы не задали домен. Используется дефолтный 'example.com'. Рекомендуется задать реальный домен."
     LOG_WARN "Для задания домена, запустите скрипт с аргументом: ./script.sh yourdomain.com"
   fi
 
+  # Удаляем старые контейнеры и директории
   remove_old_containers_and_dir
+
+  # Устанавливаем Docker
   install_docker
+
+  # Устанавливаем необходимые пакеты
   install_required_packages
+
+  # Настраиваем iptables и сетевые параметры
   setup_iptables_and_network
+
+  # Генерируем сертификаты
   generate_certs
+
+  # Выбираем свободный порт
+  local CHOSEN_PORT
+  CHOSEN_PORT=$(find_free_port) || {
+    LOG_ERROR "Не удалось выбрать свободный порт. Скрипт завершён с ошибками."
+    exit 1
+  }
+  LOG_OK "Выбран свободный порт: ${CHOSEN_PORT}"
+
+  # Открываем выбранный порт в iptables для TCP и UDP
+  open_port_in_iptables "${CHOSEN_PORT}" "tcp"
+  open_port_in_iptables "${CHOSEN_PORT}" "udp"
+
+  # Обновляем переменную порта для Shadowsocks
+  SHADOWSOCKS_PORT="${CHOSEN_PORT}"
+
+  # Запускаем контейнер Shadowsocks + v2ray-plugin с выбранным портом
   start_shadowsocks_v2ray_container
+
+  # Запускаем Watchtower для автоматических обновлений
   start_watchtower
+
+  # Проверяем контейнер и выводим ss:// ссылку
   check_container_and_print_link
 
   echo
