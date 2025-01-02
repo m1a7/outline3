@@ -37,7 +37,7 @@ DOCKER_GPG_KEY_URL="https://download.docker.com/linux/ubuntu/gpg"
 DOCKER_REPO="https://download.docker.com/linux/ubuntu"
 
 # Введите ваш домен здесь или передайте как аргумент
-DOMAIN="${1:-example.com}"
+DOMAIN="${1:-google.com}"
 
 # Цвета для логов
 COLOR_RESET="\033[0m"
@@ -358,8 +358,8 @@ check_container_and_print_link() {
     [ -z "${PUBLIC_IP}" ] && PUBLIC_IP="127.0.0.1"
 
     # Проверяем, задан ли домен корректно
-    if [[ "${DOMAIN}" == "example.com" ]]; then
-      LOG_WARN "Вы используете дефолтный домен 'example.com'. Замените его на ваш реальный домен для корректной работы TLS."
+    if [[ "${DOMAIN}" == "google.com" ]]; then
+      LOG_WARN "Вы используете дефолтный домен 'google.com'. Замените его на ваш реальный домен для корректной работы TLS."
     fi
 
     # Формируем base64("method:password")
@@ -390,8 +390,8 @@ check_container_and_print_link() {
 ###############################################################################
 main() {
   # Проверяем, передан ли домен
-  if [ "${DOMAIN}" = "example.com" ]; then
-    LOG_WARN "Вы не задали домен. Используется дефолтный 'example.com'. Рекомендуется задать реальный домен."
+  if [ "${DOMAIN}" = "google.com" ]; then
+    LOG_WARN "Вы не задали домен. Используется дефолтный 'google.com'. Рекомендуется задать реальный домен."
     LOG_WARN "Для задания домена, запустите скрипт с аргументом: ./script.sh yourdomain.com"
   fi
 
