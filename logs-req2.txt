@@ -1,0 +1,44 @@
+root@LND:~# sudo bash -c "$(wget -qO- https://raw.githubusercontent.com/m1a7/outline3/refs/heads/master/req2.sh)"
+[INFO] Удаляем старые контейнеры (shadowbox, watchtower) и директорию /opt/outline
+
+[INFO] Устанавливаем Docker из официального репозитория
+
+[OK]   Docker установлен
+[INFO] Устанавливаем необходимые пакеты (iptables, openssl, jq, net-tools, curl, coreutils и т.д.)
+[OK]   Все необходимые пакеты установлены
+[INFO] Настраиваем iptables (MASQUERADE, блокировка ICMP), MTU
+[OK]   MASQUERADE успешно добавлен для интерфейса eth0
+[OK]   ICMP-запросы блокированы
+[OK]   MTU=1400 установлен на интерфейсе eth0
+[INFO] Генерируем самоподписанный сертификат и ключ
+[OK]   Сертификат: /opt/outline/persisted-state/shadowbox-selfsigned.crt
+[OK]   Приватный ключ: /opt/outline/persisted-state/shadowbox-selfsigned.key
+[INFO] Генерируем SHA-256 отпечаток сертификата
+[OK]   SHA-256 отпечаток: B660C877585FEE291E2BF5CEBF2CE51CC6C5B1E188E6E78D18F67B521450E387
+[OK]   Секретный префикс API: Hoyv81jm4Ls3cjDKYYJ1Uw
+[OK]   Конфигурация записана в /opt/outline/access.txt
+[INFO] Запуск контейнеров Shadowbox и Watchtower
+[OK]   Контейнер shadowbox запущен
+[OK]   Контейнер watchtower запущен
+[INFO] Проверяем работу контейнеров и выводим итоговую конфигурацию
+[OK]   Контейнер shadowbox работает
+[OK]   Контейнер watchtower работает
+[OK]   Management API порт 8443 слушается
+[WARN] Порт 443 (Shadowsocks) не слушается
+
+[INFO] JSON-конфигурация для Outline Manager:
+{"apiUrl":"https://159.65.30.136:8443/Hoyv81jm4Ls3cjDKYYJ1Uw","certSha256":"B660C877585FEE291E2BF5CEBF2CE51CC6C5B1E188E6E78D18F67B521450E387"}
+
+[INFO] Содержимое /opt/outline/access.txt:
+certSha256:B660C877585FEE291E2BF5CEBF2CE51CC6C5B1E188E6E78D18F67B521450E387
+apiSecret:Hoyv81jm4Ls3cjDKYYJ1Uw
+certFile:/opt/outline/persisted-state/shadowbox-selfsigned.crt
+keyFile:/opt/outline/persisted-state/shadowbox-selfsigned.key
+apiPort:8443
+ssPort:443
+
+[INFO] Скопируйте вышеуказанный JSON в Outline Manager (шаг 'Add Server' / 'Добавить сервер')
+[INFO] Не забудьте открыть порты 443 (TCP/UDP) и 8443 (TCP) в фаерволе/облаке.
+
+[OK]   Скрипт выполнен успешно, ошибок не обнаружено.
+root@LND:~# 
