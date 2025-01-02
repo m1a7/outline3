@@ -1,0 +1,60 @@
+root@LND:~# sudo bash -c "$(wget -qO- https://raw.githubusercontent.com/m1a7/outline3/refs/heads/master/req5.sh)"
+[INFO] Устанавливаем Docker из официального репозитория
+[OK]   Docker установлен
+[INFO] Устанавливаем необходимые пакеты (iptables, openssl, jq, net-tools, curl, coreutils и т.д.)[OK]   Все необходимые пакеты установлены
+[INFO] Устанавливаем certbot для получения SSL-сертификатов от Let's Encrypt
+[INFO] certbot уже установлен, пропускаем установку.
+[INFO] Проверяем, что домен rnddomain.duckdns.org указывает на IP 165.22.127.167...
+[OK]   DNS-запись для домена rnddomain.duckdns.org корректна.
+[INFO] Получаем SSL-сертификат от Let's Encrypt для домена rnddomain.duckdns.org...
+Saving debug log to /var/log/letsencrypt/letsencrypt.log
+Account registered.
+Requesting a certificate for rnddomain.duckdns.org
+
+Successfully received certificate.
+Certificate is saved at: /etc/letsencrypt/live/rnddomain.duckdns.org/fullchain.pem
+Key is saved at:         /etc/letsencrypt/live/rnddomain.duckdns.org/privkey.pem
+This certificate expires on 2025-04-02.
+These files will be updated when the certificate renews.
+Certbot has set up a scheduled task to automatically renew this certificate in the background.
+
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+If you like Certbot, please consider supporting our work by:
+ * Donating to ISRG / Let's Encrypt:   https://letsencrypt.org/donate
+ * Donating to EFF:                    https://eff.org/donate-le
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+[OK]   SSL-сертификат успешно получен.
+[OK]   Пути к сертификатам: сертификат - /etc/letsencrypt/live/rnddomain.duckdns.org/fullchain.pem, ключ - /etc/letsencrypt/live/rnddomain.duckdns.org/privkey.pem
+[INFO] Ищем свободный порт в диапазоне 20000-60000...
+[OK]   Выбран свободный порт: 26785
+[INFO] Запускаем контейнер Shadowsocks + v2ray-plugin (teddysun/shadowsocks-libev)
+Unable to find image 'teddysun/shadowsocks-libev:latest' locally
+latest: Pulling from teddysun/shadowsocks-libev
+Status: Downloaded newer image for teddysun/shadowsocks-libev:latest
+bab82e27427f584f4e9f71acfe3e87ec119627a57100cb0342a3959f21c08760
+[OK]   Контейнер shadowsocks_v2ray запущен. Пароль: 0lPr7te0k3lZ5dfd
+[OK]   Конфигурация сохранена в /opt/outline/ss-config.txt
+[INFO] Запускаем контейнер Watchtower для автоматического обновления
+Unable to find image 'containrrr/watchtower:latest' locally
+latest: Pulling from containrrr/watchtower
+57241801ebfd: Pull complete 
+3d4f475b92a2: Pull complete 
+1f05004da6d7: Pull complete 
+Digest: sha256:6dd50763bbd632a83cb154d5451700530d1e44200b268a4e9488fefdfcf2b038
+Status: Downloaded newer image for containrrr/watchtower:latest
+cc6ea96f0d43b2fa4ed5b5614653367e7f4ff6534d3d3ea9d83fdb1e35b51b5b
+[OK]   Контейнер watchtower запущен
+[INFO] Проверяем работу контейнера и выводим итоговую ss:// ссылку
+[OK]   Контейнер shadowsocks_v2ray работает
+[WARN] Порт 26785 не слушается. Проверьте настройки контейнера и файрвол.
+
+[INFO] Готовая ссылка Shadowsocks + v2ray-plugin:
+ss://Y2hhY2hhMjAtaWV0Zi1wb2x5MTMwNTowbFByN3RlMGszbFo1ZGZk@165.22.127.167:26785?plugin=v2ray-plugin%3bserver%3btls%3bhost%3drnddomain.duckdns.org
+
+[INFO] Инструкции для пользователя:
+[INFO] 1. Скопируйте строку подключения выше.
+[INFO] 2. Вставьте её в ваш клиент Shadowsocks.
+[INFO] 3. Убедитесь, что ваш клиент настроен на использование плагина v2ray-plugin с опциями: server;tls;host=rnddomain.duckdns.org
+[INFO] 4. Поскольку используется сертификат от Let's Encrypt, клиент не будет выдавать предупреждений о недоверенном сертификате.
+
+[OK]   Скрипт выполнен успешно, ошибок не обнаружено.
