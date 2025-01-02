@@ -1,39 +1,42 @@
-logs-req1.txt[
+root@SNG:~# sudo bash -c "$(wget -qO- https://raw.githubusercontent.com/m1a7/outline3/refs/heads/master/rebuild-req1.sh)"
+[INFO] Удаляем старые контейнеры (shadowbox, watchtower) и директорию /opt/outline
+[INFO] Устанавливаем Docker из официального репозитория
+[OK]   Docker установлен
+[INFO] Устанавливаем необходимые пакеты (iptables, openssl, jq, net-tools, curl, coreutils и т.д.)
+[OK]   Все необходимые пакеты установлены
+[INFO] Настраиваем iptables (MASQUERADE, блокировка ICMP), MTU
+[OK]   MASQUERADE успешно добавлен для интерфейса eth0
+[OK]   ICMP-запросы блокированы
+[OK]   MTU=1400 установлен на интерфейсе eth0
+[INFO] Генерируем самоподписанный сертификат и ключ
+[OK]   Сертификат: /opt/outline/persisted-state/shadowbox-selfsigned.crt
+[OK]   Приватный ключ: /opt/outline/persisted-state/shadowbox-selfsigned.key
+[INFO] Генерируем SHA-256 отпечаток сертификата
+[OK]   SHA-256 отпечаток: 221976E411298060CD2816D61CF75613D8BFCEAA638703E8CF613BB2138460E8
+[OK]   Секретный префикс API: S76KawPAuJ6arSHVzFBg
+[OK]   Конфигурация записана в /opt/outline/access.txt
+[INFO] Запуск контейнеров Shadowbox и Watchtower
+[OK]   Контейнер shadowbox запущен
+[OK]   Контейнер watchtower запущен
+[INFO] Проверяем работу контейнеров и выводим итоговую конфигурацию
+[OK]   Контейнер shadowbox работает
+[OK]   Контейнер watchtower работает
+[OK]   Management API порт 8081 слушается
+[WARN] Порт 8388 (Shadowsocks) не слушается
 
-INFO] Проверяем и удаляем старые контейнеры shadowbox/watchtower, если есть...
-[INFO] Удаляем старые сертификаты, если остались...
-[INFO] Включаем IPv4 forwarding и настраиваем MASQUERADE (eth0)...
-[OK] IPv4 forwarding включён (sysctl).
-[OK] iptables MASQUERADE добавлен для eth0.
-[INFO] Ограничиваем ICMP (ping), блокируем echo-request и echo-reply...
-[OK] ICMP echo-request (вход) заблокирован.
-[OK] ICMP echo-reply (выход) заблокирован.
-[INFO] Устанавливаем MTU=1400 на eth0...
-[OK] MTU установлен на 1400.
-[INFO] Генерируем самоподписанный сертификат + ключ для Outline...
-[OK] Сертификат и ключ созданы: /opt/outline/persisted-state/shadowbox-selfsigned.crt, /opt/outline/persisted-state/shadowbox-selfsigned.key.
-[INFO] Генерируем секретный ключ (API_PREFIX)...
-[OK] Секретный ключ API_PREFIX: oscY_BXGEMUJfGKs0t2LAA
-[OK] Записано в /opt/outline/access.txt: apiUrl, certSha256.
-[INFO] Формируем JSON-строку для Outline Manager...
-[OK] JSON для Outline Manager: {"apiUrl":"https://165.232.91.113:443/oscY_BXGEMUJfGKs0t2LAA","certSha256":"C1BD47975A751F1367EF959F84D6AD3D6C56F18F278F7D093BB992F34CF3D860"}
-[INFO] Готовим скрипт для запуска Shadowbox (Outline Server)...
-[INFO] Запускаем контейнер Shadowbox...
-Status: Downloaded newer image for quay.io/outline/shadowbox:stable
-b047e71274547feb307c1bc0e50986358ec470e62039a50774124480cfe4d82e
-[OK] Контейнер Shadowbox запущен.
-[INFO] Запускаем Watchtower для автообновления...
-[OK] Watchtower успешно запущен.
-[INFO] Проверяем запущенные контейнеры и порты...
-[OK] Контейнер shadowbox работает.
-[OK] Контейнер watchtower работает.
-[INFO] Проверяем порт 443 (TCP) через ss...
-[OK] Порт 443 слушается.
-[INFO] Инструкция по использованию Outline VPN:
-1) Скачайте Outline Manager и введите туда следующую строку (см. ниже).
-2) Проверьте, что вы не можете «пропинговать» сервер (ICMP блокирован).
-3) Если что-то не работает, посмотрите логи:
-   docker logs shadowbox
-   docker logs watchtower
-[INFO] === Итоговая конфигурация для Outline Manager ===
-{"apiUrl":"https://165.232.91.113:443/oscY_BXGEMUJfGKs0t2LAA","certSha256":"C1BD47975A751F1367EF959F84D6AD3D6C56F18F278F7D093BB992F34CF3D860"}
+[INFO] JSON-конфигурация для Outline Manager:
+{"apiUrl":"https://206.189.92.239:8081/S76KawPAuJ6arSHVzFBg","certSha256":"221976E411298060CD2816D61CF75613D8BFCEAA638703E8CF613BB2138460E8"}
+
+[INFO] Содержимое /opt/outline/access.txt:
+certSha256:221976E411298060CD2816D61CF75613D8BFCEAA638703E8CF613BB2138460E8
+apiSecret:S76KawPAuJ6arSHVzFBg
+certFile:/opt/outline/persisted-state/shadowbox-selfsigned.crt
+keyFile:/opt/outline/persisted-state/shadowbox-selfsigned.key
+apiPort:8081
+ssPort:8388
+
+[INFO] Скопируйте вышеуказанный JSON в Outline Manager (шаг 'Add Server' / 'Добавить сервер')
+[INFO] Если требуется, откройте порты 8081 (TCP) и 8388 (TCP/UDP) в фаерволе/облаке.
+
+[OK]   Скрипт выполнен успешно, ошибок не обнаружено.
+root@SNG:~# 
