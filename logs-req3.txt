@@ -1,0 +1,37 @@
+root@LND:~# sudo bash -c "$(wget -qO- https://raw.githubusercontent.com/m1a7/outline3/refs/heads/master/req3.sh)"
+[WARN] Вы не задали домен. Используется дефолтный 'google.com'. Рекомендуется задать реальный домен.
+[WARN] Для задания домена, запустите скрипт с аргументом: sudo ./setup_shadowsocks.sh yourdomain.com
+[INFO] Удаляем старые контейнеры (shadowsocks_v2ray, watchtower) и директорию /opt/outline
+[OK]   Docker установлен
+[INFO] Устанавливаем необходимые пакеты (iptables, openssl, jq, net-tools, curl, coreutils и т.д.)
+[OK]   Все необходимые пакеты установлены
+[INFO] Настраиваем сетевые параметры: блокировка ICMP, установка MTU
+[OK]   ICMP-запросы блокированы
+[OK]   MTU=1400 установлен на интерфейсе eth0
+[INFO] Генерируем самоподписанный сертификат и ключ для v2ray-plugin (TLS)
+[OK]   Сертификат: /opt/outline/persisted-state/ss-selfsigned.crt
+[OK]   Приватный ключ: /opt/outline/persisted-state/ss-selfsigned.key
+[INFO] Ищем свободный порт в диапазоне 20000-60000...
+[OK]   Выбран свободный порт: 35480
+[INFO] Запускаем контейнер Shadowsocks + v2ray-plugin (teddysun/shadowsocks-libev)
+2bcd1dffd0d2d5b2ab1c31da0e6bf2ad7861b0b701ba7224e9678978f2d7db39
+[OK]   Контейнер shadowsocks_v2ray запущен. Порт: 35480, пароль: vOdjI3fTjpF7T4Ap
+[OK]   Конфигурация сохранена в /opt/outline/ss-config.txt
+[INFO] Запускаем контейнер Watchtower для автоматического обновления
+1a1e72c0227c0f1579a3a8483fe1fd047c3d25db4b51b30cc07acf45604dcb65
+[OK]   Контейнер watchtower запущен
+[INFO] Проверяем работу контейнера и выводим итоговую ss:// ссылку
+[OK]   Контейнер shadowsocks_v2ray работает
+[WARN] Порт 35480 не слушается. Проверьте настройки контейнера и файрвол.
+[WARN] Вы используете дефолтный домен 'google.com'. Замените его на ваш реальный домен для корректной работы TLS.
+
+[INFO] Готовая ссылка Shadowsocks + v2ray-plugin:
+ss://Y2hhY2hhMjAtaWV0Zi1wb2x5MTMwNTp2T2RqSTNmVGpwRjdUNEFw@167.172.49.71:35480?plugin=v2ray-plugin%3bserver%3btls%3bhost%3dgoogle.com
+
+[INFO] Убедитесь, что в клиенте Shadowsocks настроены следующие параметры плагина:
+[INFO]   Plugin: v2ray-plugin
+[INFO]   Plugin Options: server;tls;host=google.com
+
+[INFO] Если у вас настроен реальный домен, убедитесь, что сертификат и ключ соответствуют этому домену.
+
+[OK]   Скрипт выполнен успешно, ошибок не обнаружено.
